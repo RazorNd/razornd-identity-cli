@@ -8,7 +8,8 @@ mod token_provider;
 
 pub use browser::{Browser, SystemBrowser};
 pub use callback_server::{
-    CallbackListener, CallbackResponse, CallbackServer, LocalCallbackServer,
+    CallbackListenError, CallbackListener, CallbackReceiveError, CallbackReceiveErrorKind,
+    CallbackResponse, CallbackServer, LocalCallbackServer,
 };
 pub use client::{OidcClient, OidcClientError, OidcClientInitError};
 pub use lazy::LazyOidcClient;

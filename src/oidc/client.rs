@@ -1,6 +1,6 @@
 use crate::oidc::{
-    AccessToken, Browser, CallbackListener, CallbackServer, LocalCallbackServer, SystemBrowser,
-    TokenProvider, TokenProviderError,
+    AccessToken, Browser, CallbackListenError, CallbackListener, CallbackReceiveError,
+    CallbackServer, LocalCallbackServer, SystemBrowser, TokenProvider,
 };
 use async_trait::async_trait;
 use openidconnect::{
@@ -10,6 +10,7 @@ use openidconnect::{
     TokenResponse,
     core::{CoreAuthenticationFlow, CoreClient, CoreErrorResponseType, CoreProviderMetadata},
 };
+use std::io;
 use std::net::SocketAddr;
 use thiserror::Error;
 
@@ -36,11 +37,11 @@ pub enum OidcClientInitError {
 #[derive(Debug, Error)]
 pub enum OidcClientError {
     #[error("Failed to start callback listener: {0}")]
-    CallbackServer(#[source] TokenProviderError),
+    CallbackServer(#[source] CallbackListenError),
     #[error("Failed to open authorization URL in browser: {0}")]
-    Browser(#[source] TokenProviderError),
+    Browser(#[source] io::Error),
     #[error("Failed to receive authorization callback: {0}")]
-    CallbackReceive(#[source] TokenProviderError),
+    CallbackReceive(#[source] CallbackReceiveError),
     #[error("OAuth state did not match")]
     InvalidState,
     #[error("Authorization provider rejected the request: {0}")]
@@ -127,7 +128,11 @@ impl<C: CallbackServer> OidcClient<C, SystemBrowser> {
     }
 }
 
-impl<C: CallbackServer, B: Browser> OidcClient<C, B> {
+impl<C, B> OidcClient<C, B>
+where
+    C: CallbackServer,
+    B: Browser,
+{
     /// Builds an OIDC client with custom callback server and browser.
     pub async fn with_components(
         issuer_url: IssuerUrl,
@@ -211,7 +216,11 @@ impl<C: CallbackServer, B: Browser> OidcClient<C, B> {
 }
 
 #[async_trait]
-impl<C: CallbackServer, B: Browser> TokenProvider<OidcClientError> for OidcClient<C, B> {
+impl<C, B> TokenProvider<OidcClientError> for OidcClient<C, B>
+where
+    C: CallbackServer,
+    B: Browser,
+{
     async fn access_token(&self) -> Result<AccessToken, OidcClientError> {
         self.authorize().await
     }
@@ -220,6 +229,7 @@ impl<C: CallbackServer, B: Browser> TokenProvider<OidcClientError> for OidcClien
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::oidc::TokenProviderError;
     use crate::oidc::tests::support::{
         BrowserMode, CallbackMode, error_test_server, invalid_id_token, mount_error_test_provider,
         mount_oidc_provider, successful_callback_components, test_client,

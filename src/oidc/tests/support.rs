@@ -1,6 +1,6 @@
 use crate::oidc::{
-    Browser, CallbackListener, CallbackResponse, CallbackServer, OidcClient, OidcClientInitError,
-    TokenProviderError,
+    Browser, CallbackListenError, CallbackListener, CallbackReceiveError, CallbackReceiveErrorKind,
+    CallbackResponse, CallbackServer, OidcClient, OidcClientInitError,
 };
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -22,7 +22,7 @@ impl CallbackServer for SuccessfulCallbackServer {
     fn listen(
         &self,
         _redirect_url: &openidconnect::RedirectUrl,
-    ) -> Result<Self::Listener, TokenProviderError> {
+    ) -> Result<Self::Listener, CallbackListenError> {
         Ok(SuccessfulCallbackListener {
             state: self.state.clone(),
         })
@@ -35,11 +35,15 @@ pub(crate) struct SuccessfulCallbackListener {
 
 #[async_trait]
 impl CallbackListener for SuccessfulCallbackListener {
-    async fn receive(self) -> Result<CallbackResponse, TokenProviderError> {
+    async fn receive(self) -> Result<CallbackResponse, CallbackReceiveError> {
         let state = self
             .state
             .lock()
-            .map_err(|_| "callback state lock poisoned")?
+            .map_err(|_| {
+                CallbackReceiveError::new(CallbackReceiveErrorKind::ReceiveRequest(
+                    std::io::Error::other("callback state lock poisoned"),
+                ))
+            })?
             .take();
         Ok(CallbackResponse {
             code: Some("test-authorization-code".to_owned()),
@@ -55,7 +59,7 @@ pub(crate) struct SuccessfulBrowser {
 }
 
 impl Browser for SuccessfulBrowser {
-    fn open(&self, authorization_url: &Url) -> Result<(), TokenProviderError> {
+    fn open(&self, authorization_url: &Url) -> Result<(), std::io::Error> {
         let params: std::collections::HashMap<_, _> =
             authorization_url.query_pairs().into_owned().collect();
         assert_eq!(
@@ -74,7 +78,8 @@ impl Browser for SuccessfulBrowser {
         *self
             .state
             .lock()
-            .map_err(|_| "callback state lock poisoned")? = params.get("state").cloned();
+            .map_err(|_| std::io::Error::other("callback state lock poisoned"))? =
+            params.get("state").cloned();
         Ok(())
     }
 }
@@ -123,9 +128,11 @@ pub(crate) struct TestCallbackListener {
 impl CallbackServer for TestCallbackServer {
     type Listener = TestCallbackListener;
 
-    fn listen(&self, _redirect_url: &RedirectUrl) -> Result<Self::Listener, TokenProviderError> {
+    fn listen(&self, _redirect_url: &RedirectUrl) -> Result<Self::Listener, CallbackListenError> {
         if matches!(self.mode, CallbackMode::ListenError) {
-            return Err("test callback bind error".into());
+            return Err(CallbackListenError(
+                std::io::Error::other("test callback bind error").into(),
+            ));
         }
 
         Ok(TestCallbackListener {
@@ -137,14 +144,22 @@ impl CallbackServer for TestCallbackServer {
 
 #[async_trait]
 impl CallbackListener for TestCallbackListener {
-    async fn receive(self) -> Result<CallbackResponse, TokenProviderError> {
+    async fn receive(self) -> Result<CallbackResponse, CallbackReceiveError> {
         if matches!(self.mode, CallbackMode::ReceiveError) {
-            return Err("test callback receive error".into());
+            return Err(CallbackReceiveError::new(
+                CallbackReceiveErrorKind::ReceiveRequest(std::io::Error::other(
+                    "test callback receive error",
+                )),
+            ));
         }
         let state = self
             .state
             .lock()
-            .map_err(|_| "test state lock poisoned")?
+            .map_err(|_| {
+                CallbackReceiveError::new(CallbackReceiveErrorKind::ReceiveRequest(
+                    std::io::Error::other("test state lock poisoned"),
+                ))
+            })?
             .take();
 
         Ok(match self.mode {
@@ -178,16 +193,19 @@ pub(crate) struct TestBrowser {
 }
 
 impl Browser for TestBrowser {
-    fn open(&self, authorization_url: &Url) -> Result<(), TokenProviderError> {
+    fn open(&self, authorization_url: &Url) -> Result<(), std::io::Error> {
         if matches!(self.mode, BrowserMode::Error) {
-            return Err("test browser error".into());
+            return Err(std::io::Error::other("test browser error"));
         }
 
         let state = authorization_url
             .query_pairs()
             .find_map(|(key, value)| (key == "state").then(|| value.into_owned()))
-            .ok_or("authorization URL did not contain state")?;
-        *self.state.lock().map_err(|_| "test state lock poisoned")? = Some(state);
+            .ok_or_else(|| std::io::Error::other("authorization URL did not contain state"))?;
+        *self
+            .state
+            .lock()
+            .map_err(|_| std::io::Error::other("test state lock poisoned"))? = Some(state);
         Ok(())
     }
 }
