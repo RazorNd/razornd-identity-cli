@@ -1,20 +1,40 @@
 use crate::oidc::{
-    AccessToken, Browser, CallbackListenError, CallbackListener, CallbackReceiveError,
-    CallbackServer, LocalCallbackServer, SystemBrowser, TokenProvider,
+    AccessToken, Authorization, AuthorizationProvider, Browser, CallbackListenError,
+    CallbackListener, CallbackReceiveError, CallbackServer, LocalCallbackServer, RefreshToken,
+    SystemBrowser,
 };
 use async_trait::async_trait;
 use openidconnect::{
-    AuthorizationCode, ClaimsVerificationError, ClientId, ConfigurationError, CsrfToken,
-    EndpointMaybeSet, EndpointNotSet, EndpointSet, HttpClientError, IssuerUrl, Nonce,
-    OAuth2TokenResponse, PkceCodeChallenge, RedirectUrl, RequestTokenError, StandardErrorResponse,
+    AccessToken as OAuthAccessToken, AuthorizationCode, ClaimsVerificationError, ClientId,
+    ConfigurationError, CsrfToken, EmptyAdditionalClaims, EndpointMaybeSet, EndpointNotSet,
+    EndpointSet, HttpClientError, IssuerUrl, Nonce, OAuth2TokenResponse, PkceCodeChallenge,
+    RedirectUrl, RefreshToken as OAuthRefreshToken, RequestTokenError, StandardErrorResponse,
     TokenResponse,
-    core::{CoreAuthenticationFlow, CoreClient, CoreErrorResponseType, CoreProviderMetadata},
+    core::{
+        CoreAuthDisplay, CoreAuthPrompt, CoreAuthenticationFlow, CoreErrorResponseType,
+        CoreGenderClaim, CoreIdToken, CoreJsonWebKey, CoreJweContentEncryptionAlgorithm,
+        CoreJwsSigningAlgorithm, CoreProviderMetadata, CoreRevocableToken,
+        CoreRevocationErrorResponse, CoreTokenIntrospectionResponse, CoreTokenType,
+    },
 };
+use serde::{Deserialize, Serialize};
 use std::io;
 use std::net::SocketAddr;
+use std::time::Duration;
 use thiserror::Error;
 
-type ConfiguredCoreClient = CoreClient<
+type ConfiguredCoreClient = openidconnect::Client<
+    EmptyAdditionalClaims,
+    CoreAuthDisplay,
+    CoreGenderClaim,
+    CoreJweContentEncryptionAlgorithm,
+    CoreJsonWebKey,
+    CoreAuthPrompt,
+    StandardErrorResponse<CoreErrorResponseType>,
+    OwnedCoreTokenResponse,
+    CoreTokenIntrospectionResponse,
+    CoreRevocableToken,
+    CoreRevocationErrorResponse,
     EndpointSet,
     EndpointNotSet,
     EndpointNotSet,
@@ -22,6 +42,55 @@ type ConfiguredCoreClient = CoreClient<
     EndpointMaybeSet,
     EndpointMaybeSet,
 >;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct OwnedCoreTokenResponse {
+    access_token: OAuthAccessToken,
+    token_type: CoreTokenType,
+    #[serde(default)]
+    expires_in: Option<u64>,
+    #[serde(default)]
+    refresh_token: Option<OAuthRefreshToken>,
+    #[serde(default)]
+    id_token: Option<CoreIdToken>,
+}
+
+impl OAuth2TokenResponse for OwnedCoreTokenResponse {
+    type TokenType = CoreTokenType;
+
+    fn access_token(&self) -> &OAuthAccessToken {
+        &self.access_token
+    }
+
+    fn token_type(&self) -> &Self::TokenType {
+        &self.token_type
+    }
+
+    fn expires_in(&self) -> Option<Duration> {
+        self.expires_in.map(Duration::from_secs)
+    }
+
+    fn refresh_token(&self) -> Option<&OAuthRefreshToken> {
+        self.refresh_token.as_ref()
+    }
+
+    fn scopes(&self) -> Option<&Vec<openidconnect::Scope>> {
+        None
+    }
+}
+
+impl
+    TokenResponse<
+        EmptyAdditionalClaims,
+        CoreGenderClaim,
+        CoreJweContentEncryptionAlgorithm,
+        CoreJwsSigningAlgorithm,
+    > for OwnedCoreTokenResponse
+{
+    fn id_token(&self) -> Option<&CoreIdToken> {
+        self.id_token.as_ref()
+    }
+}
 
 type TokenEndpointError = RequestTokenError<
     HttpClientError<reqwest::Error>,
@@ -56,10 +125,7 @@ pub enum OidcClientError {
     IdTokenValidation(#[source] ClaimsVerificationError),
 }
 
-/// OIDC Authorization Code + PKCE token provider for a native CLI client.
-///
-/// This prototype performs an interactive login on every call. It does not
-/// cache tokens or use refresh tokens; a store decorator can add that later.
+/// OIDC Authorization Code + PKCE client for a native CLI client.
 pub struct OidcClient<C = LocalCallbackServer, B = SystemBrowser> {
     oidc_client: ConfiguredCoreClient,
     http_client: reqwest::Client,
@@ -146,7 +212,7 @@ where
             .await
             .map_err(|error| OidcClientInitError::Discovery(error.to_string()))?;
 
-        let oidc_client = CoreClient::from_provider_metadata(provider, client_id, None)
+        let oidc_client = ConfiguredCoreClient::from_provider_metadata(provider, client_id, None)
             .set_redirect_uri(redirect_url.clone());
 
         Ok(Self {
@@ -157,8 +223,15 @@ where
             browser,
         })
     }
+}
 
-    async fn authorize(&self) -> Result<AccessToken, OidcClientError> {
+#[async_trait]
+impl<C, B> AuthorizationProvider<OidcClientError> for OidcClient<C, B>
+where
+    C: CallbackServer,
+    B: Browser,
+{
+    async fn authorize(&self) -> Result<Authorization, OidcClientError> {
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
         let (authorization_url, csrf_state, nonce) = self
             .oidc_client
@@ -198,37 +271,36 @@ where
             .exchange_code(AuthorizationCode::new(code))
             .map_err(OidcClientError::TokenExchangeConfiguration)?
             .set_pkce_verifier(pkce_verifier);
-        let token_response = token_request
+
+        let OwnedCoreTokenResponse {
+            access_token,
+            refresh_token,
+            id_token,
+            expires_in,
+            ..
+        } = token_request
             .request_async(&self.http_client)
             .await
             .map_err(OidcClientError::TokenEndpoint)?;
 
-        if let Some(id_token) = token_response.id_token() {
+        if let Some(id_token) = id_token {
             id_token
                 .claims(&self.oidc_client.id_token_verifier(), &nonce)
                 .map_err(OidcClientError::IdTokenValidation)?;
         }
 
-        Ok(AccessToken::new(
-            token_response.access_token().secret().to_owned(),
+        Ok(Authorization::new(
+            AccessToken::new(access_token.into_secret()),
+            refresh_token.map(|token| RefreshToken::new(token.into_secret())),
+            expires_in.map(Duration::from_secs),
         ))
-    }
-}
-
-#[async_trait]
-impl<C, B> TokenProvider<OidcClientError> for OidcClient<C, B>
-where
-    C: CallbackServer,
-    B: Browser,
-{
-    async fn access_token(&self) -> Result<AccessToken, OidcClientError> {
-        self.authorize().await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::oidc::TokenProvider;
     use crate::oidc::tests::support::{
         BrowserMode, CallbackMode, error_test_server, invalid_id_token, mount_error_test_provider,
         mount_oidc_provider, successful_callback_components, test_client,
@@ -236,7 +308,8 @@ mod tests {
     use wiremock::MockServer;
 
     #[tokio::test]
-    async fn access_token_returns_token_after_authorization_code_flow() -> anyhow::Result<()> {
+    async fn authorize_returns_tokens_and_lifetime_after_authorization_code_flow()
+    -> anyhow::Result<()> {
         let server = MockServer::start().await;
         let issuer = server.uri();
         mount_oidc_provider(&server, 1, 1).await;
@@ -256,8 +329,18 @@ mod tests {
         )
         .await?;
 
-        let access_token = client.access_token().await?;
-        assert_eq!(access_token.expose_secret(), "test-access-token");
+        let authorization = client.authorize().await?;
+        assert_eq!(
+            authorization.access_token().expose_secret(),
+            "test-access-token"
+        );
+        assert_eq!(
+            authorization
+                .refresh_token()
+                .map(|token| token.expose_secret()),
+            Some("test-refresh-token")
+        );
+        assert_eq!(authorization.expires_in(), Some(Duration::from_secs(3600)));
 
         Ok(())
     }

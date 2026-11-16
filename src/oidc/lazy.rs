@@ -3,7 +3,7 @@ use super::{
     callback_server::{CallbackServer, LocalCallbackServer},
     client::OidcClient,
 };
-use crate::oidc::{AccessToken, TokenProvider};
+use crate::oidc::{Authorization, AuthorizationProvider};
 use async_trait::async_trait;
 use openidconnect::{ClientId, IssuerUrl, RedirectUrl};
 use std::net::SocketAddr;
@@ -110,12 +110,12 @@ impl<C: CallbackServer, B: Browser> LazyOidcClient<C, B> {
 }
 
 #[async_trait]
-impl<C, B> TokenProvider<LazyOidcClientError> for LazyOidcClient<C, B>
+impl<C, B> AuthorizationProvider<LazyOidcClientError> for LazyOidcClient<C, B>
 where
     C: CallbackServer,
     B: Browser,
 {
-    async fn access_token(&self) -> Result<AccessToken, LazyOidcClientError> {
+    async fn authorize(&self) -> Result<Authorization, LazyOidcClientError> {
         let client = self
             .client
             .get_or_try_init(|| async {
@@ -140,7 +140,7 @@ where
             .await?;
 
         client
-            .access_token()
+            .authorize()
             .await
             .map_err(LazyOidcClientError::TokenRequest)
     }
@@ -150,7 +150,7 @@ where
 mod tests {
     use super::*;
     use crate::oidc::{
-        OidcClientError, OidcClientInitError,
+        OidcClientError, OidcClientInitError, TokenProvider,
         tests::support::{mount_oidc_provider, successful_callback_components},
     };
     use std::net::TcpListener;
@@ -191,10 +191,24 @@ mod tests {
             browser,
         );
 
-        for _ in 0..2 {
-            let access_token = client.access_token().await?;
-            assert_eq!(access_token.expose_secret(), "test-access-token");
-        }
+        let authorization = client.authorize().await?;
+        assert_eq!(
+            authorization.access_token().expose_secret(),
+            "test-access-token"
+        );
+        assert_eq!(
+            authorization
+                .refresh_token()
+                .map(|token| token.expose_secret()),
+            Some("test-refresh-token")
+        );
+        assert_eq!(
+            authorization.expires_in(),
+            Some(std::time::Duration::from_secs(3600))
+        );
+
+        let access_token = client.access_token().await?;
+        assert_eq!(access_token.expose_secret(), "test-access-token");
 
         server.verify().await;
         Ok(())

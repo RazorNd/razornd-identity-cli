@@ -1705,6 +1705,7 @@ dependencies = [
  "base64 0.22.1",
  "openidconnect",
  "reqwest",
+ "serde",
  "serde_json",
  "thiserror 2.0.21",
  "tiny_http",

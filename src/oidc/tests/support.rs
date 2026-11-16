@@ -270,6 +270,7 @@ pub(crate) async fn mount_oidc_provider(
         .and(path("/token"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "access_token": "test-access-token",
+            "refresh_token": "test-refresh-token",
             "token_type": "Bearer",
             "expires_in": 3600
         })))
