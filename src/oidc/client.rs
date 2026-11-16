@@ -1,11 +1,13 @@
-use crate::oidc::{AccessToken, TokenProvider, TokenProviderError};
+use crate::oidc::{
+    AccessToken, CallbackServer, LocalCallbackServer, TokenProvider, TokenProviderError,
+};
 use async_trait::async_trait;
 use openidconnect::{
     AuthorizationCode, ClientId, CsrfToken, EndpointMaybeSet, EndpointNotSet, EndpointSet,
     IssuerUrl, Nonce, OAuth2TokenResponse, PkceCodeChallenge, RedirectUrl, TokenResponse,
     core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata},
 };
-use std::{collections::HashMap, net::SocketAddr};
+use std::net::SocketAddr;
 
 type ConfiguredCoreClient = CoreClient<
     EndpointSet,
@@ -44,27 +46,21 @@ impl OidcClientConfig {
 ///
 /// This prototype performs an interactive login on every call. It does not
 /// cache tokens or use refresh tokens; a store decorator can add that later.
-pub struct OidcClient {
+pub struct OidcClient<C = LocalCallbackServer> {
     oidc_client: ConfiguredCoreClient,
     http_client: reqwest::Client,
-    callback_addr: SocketAddr,
     redirect_url: RedirectUrl,
+    callback_server: C,
 }
 
-impl OidcClient {
+impl OidcClient<LocalCallbackServer> {
     /// Builds an OIDC client from its configuration.
     pub async fn new(
         config: OidcClientConfig,
         http_client: reqwest::Client,
     ) -> Result<Self, TokenProviderError> {
-        Self::from_params(
-            config.issuer_url,
-            config.client_id,
-            config.redirect_url,
-            config.callback_addr,
-            http_client,
-        )
-        .await
+        let callback_server = LocalCallbackServer::new(config.callback_addr);
+        Self::with_callback_server(config, http_client, callback_server).await
     }
 
     /// Builds an OIDC client from individual parameters.
@@ -75,16 +71,32 @@ impl OidcClient {
         callback_addr: SocketAddr,
         http_client: reqwest::Client,
     ) -> Result<Self, TokenProviderError> {
-        let provider = CoreProviderMetadata::discover_async(issuer_url, &http_client).await?;
+        Self::new(
+            OidcClientConfig::new(issuer_url, client_id, redirect_url, callback_addr),
+            http_client,
+        )
+        .await
+    }
+}
 
-        let oidc_client = CoreClient::from_provider_metadata(provider, client_id, None)
-            .set_redirect_uri(redirect_url.clone());
+impl<C: CallbackServer> OidcClient<C> {
+    /// Builds an OIDC client with a custom callback server.
+    pub async fn with_callback_server(
+        config: OidcClientConfig,
+        http_client: reqwest::Client,
+        callback_server: C,
+    ) -> Result<Self, TokenProviderError> {
+        let provider =
+            CoreProviderMetadata::discover_async(config.issuer_url, &http_client).await?;
+
+        let oidc_client = CoreClient::from_provider_metadata(provider, config.client_id, None)
+            .set_redirect_uri(config.redirect_url.clone());
 
         Ok(Self {
             oidc_client,
             http_client,
-            callback_addr,
-            redirect_url,
+            redirect_url: config.redirect_url,
+            callback_server,
         })
     }
 
@@ -100,38 +112,20 @@ impl OidcClient {
             .set_pkce_challenge(pkce_challenge)
             .url();
 
-        let server = tiny_http::Server::http(self.callback_addr)?;
-        webbrowser::open(authorization_url.as_str())?;
-        println!("Ожидание ответа от провайдера на {} ...", self.redirect_url);
+        let callback = self
+            .callback_server
+            .receive(&authorization_url, &self.redirect_url)
+            .await?;
 
-        let expected_path = self.redirect_url.url().path().to_owned();
-        let mut callback = tokio::task::spawn_blocking(move || {
-            let request = server.recv()?;
-            let url = url::Url::parse(&format!("http://localhost{}", request.url()))?;
-            if url.path() != expected_path {
-                request.respond(tiny_http::Response::from_string("Not found"))?;
-                return Err::<HashMap<String, String>, TokenProviderError>(
-                    "Запрос пришёл на неожиданный callback path".into(),
-                );
-            }
-
-            let params: HashMap<_, _> = url.query_pairs().into_owned().collect();
-            request.respond(tiny_http::Response::from_string(
-                "Авторизация завершена. Можно закрыть это окно.",
-            ))?;
-            Ok(params)
-        })
-        .await??;
-
-        if callback.get("state").map(String::as_str) != Some(csrf_state.secret()) {
+        if callback.state.as_deref() != Some(csrf_state.secret()) {
             return Err("OAuth state не совпадает".into());
         }
-        if let Some(error) = callback.get("error") {
+        if let Some(error) = callback.error {
             return Err(format!("Провайдер отклонил авторизацию: {error}").into());
         }
 
         let code = callback
-            .remove("code")
+            .code
             .ok_or("В callback отсутствует authorization code")?;
         let token_response = self
             .oidc_client
@@ -151,7 +145,7 @@ impl OidcClient {
 }
 
 #[async_trait]
-impl TokenProvider for OidcClient {
+impl<C: CallbackServer> TokenProvider for OidcClient<C> {
     async fn access_token(&self) -> Result<AccessToken, TokenProviderError> {
         self.authorize().await
     }
