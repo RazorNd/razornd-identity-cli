@@ -222,7 +222,6 @@ fn send_completion_response(request: tiny_http::Request) -> Result<(), CallbackR
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::oidc::TokenProviderError;
     use std::{error::Error as _, net::TcpListener};
 
     #[test]
@@ -267,7 +266,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_callback_server_receives_browser_redirect() -> Result<(), TokenProviderError> {
+    async fn local_callback_server_receives_browser_redirect() -> anyhow::Result<()> {
         let probe = TcpListener::bind("127.0.0.1:0")?;
         let callback_addr = probe.local_addr()?;
         drop(probe);
@@ -297,10 +296,7 @@ mod tests {
             Ok::<_, reqwest::Error>((status, content_type, body))
         });
 
-        let callback = listener
-            .receive()
-            .await
-            .map_err(|error| -> TokenProviderError { Box::new(error) })?;
+        let callback = listener.receive().await?;
         let (status, content_type, body) = request.await??;
 
         assert_eq!(callback.code.as_deref(), Some("test-authorization-code"));

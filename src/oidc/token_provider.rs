@@ -15,9 +15,6 @@
  */
 
 use async_trait::async_trait;
-use std::error::Error;
-
-pub type TokenProviderError = Box<dyn Error + Send + Sync>;
 
 /// Access token returned by a [`TokenProvider`].
 ///
@@ -43,7 +40,7 @@ impl std::fmt::Debug for AccessToken {
 
 /// Provides an access token suitable for calling the identity service.
 #[async_trait]
-pub trait TokenProvider<E = TokenProviderError>: Send + Sync
+pub trait TokenProvider<E>: Send + Sync
 where
     E: Send,
 {

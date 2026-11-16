@@ -150,7 +150,7 @@ where
 mod tests {
     use super::*;
     use crate::oidc::{
-        OidcClientError, OidcClientInitError, TokenProviderError,
+        OidcClientError, OidcClientInitError,
         tests::support::{mount_oidc_provider, successful_callback_components},
     };
     use std::net::TcpListener;
@@ -173,7 +173,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn multiple_token_requests_discover_issuer_only_once() -> Result<(), TokenProviderError> {
+    async fn multiple_token_requests_discover_issuer_only_once() -> anyhow::Result<()> {
         let server = MockServer::start().await;
         let issuer = server.uri();
         mount_oidc_provider(&server, 1, 2).await;

@@ -229,7 +229,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::oidc::TokenProviderError;
     use crate::oidc::tests::support::{
         BrowserMode, CallbackMode, error_test_server, invalid_id_token, mount_error_test_provider,
         mount_oidc_provider, successful_callback_components, test_client,
@@ -237,8 +236,7 @@ mod tests {
     use wiremock::MockServer;
 
     #[tokio::test]
-    async fn access_token_returns_token_after_authorization_code_flow()
-    -> Result<(), TokenProviderError> {
+    async fn access_token_returns_token_after_authorization_code_flow() -> anyhow::Result<()> {
         let server = MockServer::start().await;
         let issuer = server.uri();
         mount_oidc_provider(&server, 1, 1).await;

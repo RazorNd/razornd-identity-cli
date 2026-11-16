@@ -1,10 +1,11 @@
+use anyhow::Result;
 use openidconnect::{ClientId, IssuerUrl, RedirectUrl};
-use razornd_identity_cli::oidc::{LazyOidcClient, TokenProvider, TokenProviderError};
+use razornd_identity_cli::oidc::{LazyOidcClient, TokenProvider};
 
 const REDIRECT_URI: &str = "http://127.0.0.1:53780/oauth2/callback";
 
 #[tokio::main]
-async fn main() -> Result<(), TokenProviderError> {
+async fn main() -> Result<()> {
     // Reuse this client (or its cheap clone) for OidcClient and IdentityClient.
     let http_client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
