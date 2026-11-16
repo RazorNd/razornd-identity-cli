@@ -4,11 +4,14 @@ use crate::oidc::{
 };
 use async_trait::async_trait;
 use openidconnect::{
-    AuthorizationCode, ClientId, CsrfToken, EndpointMaybeSet, EndpointNotSet, EndpointSet,
-    IssuerUrl, Nonce, OAuth2TokenResponse, PkceCodeChallenge, RedirectUrl, TokenResponse,
-    core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata},
+    AuthorizationCode, ClaimsVerificationError, ClientId, ConfigurationError, CsrfToken,
+    EndpointMaybeSet, EndpointNotSet, EndpointSet, HttpClientError, IssuerUrl, Nonce,
+    OAuth2TokenResponse, PkceCodeChallenge, RedirectUrl, RequestTokenError, StandardErrorResponse,
+    TokenResponse,
+    core::{CoreAuthenticationFlow, CoreClient, CoreErrorResponseType, CoreProviderMetadata},
 };
 use std::net::SocketAddr;
+use thiserror::Error;
 
 type ConfiguredCoreClient = CoreClient<
     EndpointSet,
@@ -18,6 +21,39 @@ type ConfiguredCoreClient = CoreClient<
     EndpointMaybeSet,
     EndpointMaybeSet,
 >;
+
+type TokenEndpointError = RequestTokenError<
+    HttpClientError<reqwest::Error>,
+    StandardErrorResponse<CoreErrorResponseType>,
+>;
+
+#[derive(Debug, Error)]
+pub enum OidcClientInitError {
+    #[error("OIDC provider discovery failed: {0}")]
+    Discovery(String),
+}
+
+#[derive(Debug, Error)]
+pub enum OidcClientError {
+    #[error("Failed to start callback listener: {0}")]
+    CallbackServer(#[source] TokenProviderError),
+    #[error("Failed to open authorization URL in browser: {0}")]
+    Browser(#[source] TokenProviderError),
+    #[error("Failed to receive authorization callback: {0}")]
+    CallbackReceive(#[source] TokenProviderError),
+    #[error("OAuth state did not match")]
+    InvalidState,
+    #[error("Authorization provider rejected the request: {0}")]
+    ProviderRejected(String),
+    #[error("Authorization callback did not contain an authorization code")]
+    MissingAuthorizationCode,
+    #[error("Failed to configure token exchange: {0}")]
+    TokenExchangeConfiguration(#[source] ConfigurationError),
+    #[error("Token endpoint request failed: {0}")]
+    TokenEndpoint(#[source] TokenEndpointError),
+    #[error("ID token validation failed: {0}")]
+    IdTokenValidation(#[source] ClaimsVerificationError),
+}
 
 /// OIDC Authorization Code + PKCE token provider for a native CLI client.
 ///
@@ -39,7 +75,7 @@ impl OidcClient<LocalCallbackServer, SystemBrowser> {
         redirect_url: RedirectUrl,
         callback_addr: SocketAddr,
         http_client: reqwest::Client,
-    ) -> Result<Self, TokenProviderError> {
+    ) -> Result<Self, OidcClientInitError> {
         Self::with_components(
             issuer_url,
             client_id,
@@ -58,7 +94,7 @@ impl OidcClient<LocalCallbackServer, SystemBrowser> {
         redirect_url: RedirectUrl,
         callback_addr: SocketAddr,
         http_client: reqwest::Client,
-    ) -> Result<Self, TokenProviderError> {
+    ) -> Result<Self, OidcClientInitError> {
         Self::new(
             issuer_url,
             client_id,
@@ -78,7 +114,7 @@ impl<C: CallbackServer> OidcClient<C, SystemBrowser> {
         redirect_url: RedirectUrl,
         http_client: reqwest::Client,
         callback_server: C,
-    ) -> Result<Self, TokenProviderError> {
+    ) -> Result<Self, OidcClientInitError> {
         Self::with_components(
             issuer_url,
             client_id,
@@ -100,8 +136,10 @@ impl<C: CallbackServer, B: Browser> OidcClient<C, B> {
         http_client: reqwest::Client,
         callback_server: C,
         browser: B,
-    ) -> Result<Self, TokenProviderError> {
-        let provider = CoreProviderMetadata::discover_async(issuer_url, &http_client).await?;
+    ) -> Result<Self, OidcClientInitError> {
+        let provider = CoreProviderMetadata::discover_async(issuer_url, &http_client)
+            .await
+            .map_err(|error| OidcClientInitError::Discovery(error.to_string()))?;
 
         let oidc_client = CoreClient::from_provider_metadata(provider, client_id, None)
             .set_redirect_uri(redirect_url.clone());
@@ -115,7 +153,7 @@ impl<C: CallbackServer, B: Browser> OidcClient<C, B> {
         })
     }
 
-    async fn authorize(&self) -> Result<AccessToken, TokenProviderError> {
+    async fn authorize(&self) -> Result<AccessToken, OidcClientError> {
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
         let (authorization_url, csrf_state, nonce) = self
             .oidc_client
@@ -127,30 +165,43 @@ impl<C: CallbackServer, B: Browser> OidcClient<C, B> {
             .set_pkce_challenge(pkce_challenge)
             .url();
 
-        let listener = self.callback_server.listen(&self.redirect_url)?;
-        self.browser.open(&authorization_url)?;
+        let listener = self
+            .callback_server
+            .listen(&self.redirect_url)
+            .map_err(OidcClientError::CallbackServer)?;
+        self.browser
+            .open(&authorization_url)
+            .map_err(OidcClientError::Browser)?;
         println!("Ожидание ответа от провайдера на {} ...", self.redirect_url);
-        let callback = listener.receive().await?;
+        let callback = listener
+            .receive()
+            .await
+            .map_err(OidcClientError::CallbackReceive)?;
 
         if callback.state.as_deref() != Some(csrf_state.secret()) {
-            return Err("OAuth state не совпадает".into());
+            return Err(OidcClientError::InvalidState);
         }
         if let Some(error) = callback.error {
-            return Err(format!("Провайдер отклонил авторизацию: {error}").into());
+            return Err(OidcClientError::ProviderRejected(error));
         }
 
         let code = callback
             .code
-            .ok_or("В callback отсутствует authorization code")?;
-        let token_response = self
+            .ok_or(OidcClientError::MissingAuthorizationCode)?;
+        let token_request = self
             .oidc_client
-            .exchange_code(AuthorizationCode::new(code))?
-            .set_pkce_verifier(pkce_verifier)
+            .exchange_code(AuthorizationCode::new(code))
+            .map_err(OidcClientError::TokenExchangeConfiguration)?
+            .set_pkce_verifier(pkce_verifier);
+        let token_response = token_request
             .request_async(&self.http_client)
-            .await?;
+            .await
+            .map_err(OidcClientError::TokenEndpoint)?;
 
         if let Some(id_token) = token_response.id_token() {
-            id_token.claims(&self.oidc_client.id_token_verifier(), &nonce)?;
+            id_token
+                .claims(&self.oidc_client.id_token_verifier(), &nonce)
+                .map_err(OidcClientError::IdTokenValidation)?;
         }
 
         Ok(AccessToken::new(
@@ -160,8 +211,8 @@ impl<C: CallbackServer, B: Browser> OidcClient<C, B> {
 }
 
 #[async_trait]
-impl<C: CallbackServer, B: Browser> TokenProvider<TokenProviderError> for OidcClient<C, B> {
-    async fn access_token(&self) -> Result<AccessToken, TokenProviderError> {
+impl<C: CallbackServer, B: Browser> TokenProvider<OidcClientError> for OidcClient<C, B> {
+    async fn access_token(&self) -> Result<AccessToken, OidcClientError> {
         self.authorize().await
     }
 }
@@ -169,7 +220,10 @@ impl<C: CallbackServer, B: Browser> TokenProvider<TokenProviderError> for OidcCl
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::oidc::tests::support::{mount_oidc_provider, successful_callback_components};
+    use crate::oidc::tests::support::{
+        BrowserMode, CallbackMode, error_test_server, invalid_id_token, mount_error_test_provider,
+        mount_oidc_provider, successful_callback_components, test_client,
+    };
     use wiremock::MockServer;
 
     #[tokio::test]
@@ -198,5 +252,134 @@ mod tests {
         assert_eq!(access_token.expose_secret(), "test-access-token");
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn access_token_returns_callback_server_error() {
+        let (_server, issuer) =
+            error_test_server(true, 500, serde_json::json!({"error": "server_error"})).await;
+        let client = test_client(issuer, CallbackMode::ListenError, BrowserMode::Success)
+            .await
+            .unwrap();
+        assert!(matches!(
+            client.access_token().await,
+            Err(OidcClientError::CallbackServer(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn access_token_returns_browser_error() {
+        let (_server, issuer) =
+            error_test_server(true, 500, serde_json::json!({"error": "server_error"})).await;
+        let client = test_client(issuer, CallbackMode::Success, BrowserMode::Error)
+            .await
+            .unwrap();
+        assert!(matches!(
+            client.access_token().await,
+            Err(OidcClientError::Browser(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn access_token_returns_callback_receive_error() {
+        let (_server, issuer) =
+            error_test_server(true, 500, serde_json::json!({"error": "server_error"})).await;
+        let client = test_client(issuer, CallbackMode::ReceiveError, BrowserMode::Success)
+            .await
+            .unwrap();
+        assert!(matches!(
+            client.access_token().await,
+            Err(OidcClientError::CallbackReceive(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn access_token_rejects_invalid_state() {
+        let (_server, issuer) =
+            error_test_server(true, 500, serde_json::json!({"error": "server_error"})).await;
+        let client = test_client(issuer, CallbackMode::InvalidState, BrowserMode::Success)
+            .await
+            .unwrap();
+        assert!(matches!(
+            client.access_token().await,
+            Err(OidcClientError::InvalidState)
+        ));
+    }
+
+    #[tokio::test]
+    async fn access_token_reports_provider_rejection() {
+        let (_server, issuer) =
+            error_test_server(true, 500, serde_json::json!({"error": "server_error"})).await;
+        let client = test_client(issuer, CallbackMode::ProviderRejected, BrowserMode::Success)
+            .await
+            .unwrap();
+        assert!(matches!(
+            client.access_token().await,
+            Err(OidcClientError::ProviderRejected(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn access_token_reports_missing_authorization_code() {
+        let (_server, issuer) =
+            error_test_server(true, 500, serde_json::json!({"error": "server_error"})).await;
+        let client = test_client(issuer, CallbackMode::MissingCode, BrowserMode::Success)
+            .await
+            .unwrap();
+        assert!(matches!(
+            client.access_token().await,
+            Err(OidcClientError::MissingAuthorizationCode)
+        ));
+    }
+
+    #[tokio::test]
+    async fn access_token_reports_token_endpoint_error() {
+        let (_server, issuer) =
+            error_test_server(true, 500, serde_json::json!({"error": "server_error"})).await;
+        let client = test_client(issuer, CallbackMode::Success, BrowserMode::Success)
+            .await
+            .unwrap();
+        assert!(matches!(
+            client.access_token().await,
+            Err(OidcClientError::TokenEndpoint(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn access_token_reports_missing_token_endpoint_configuration() {
+        let (_server, issuer) = error_test_server(false, 200, serde_json::Value::Null).await;
+        let client = test_client(issuer, CallbackMode::Success, BrowserMode::Success)
+            .await
+            .unwrap();
+        assert!(matches!(
+            client.access_token().await,
+            Err(OidcClientError::TokenExchangeConfiguration(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn access_token_reports_invalid_id_token() {
+        let id_token_server = MockServer::start().await;
+        let id_token_issuer = id_token_server.uri();
+        let id_token = invalid_id_token(&id_token_issuer, "test-client");
+        mount_error_test_provider(
+            &id_token_server,
+            true,
+            200,
+            serde_json::json!({
+                "access_token": "test-access-token",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "id_token": id_token
+            }),
+        )
+        .await;
+        let client = test_client(id_token_issuer, CallbackMode::Success, BrowserMode::Success)
+            .await
+            .unwrap();
+        assert!(matches!(
+            client.access_token().await,
+            Err(OidcClientError::IdTokenValidation(_))
+        ));
     }
 }

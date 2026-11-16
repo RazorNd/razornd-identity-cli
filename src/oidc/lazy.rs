@@ -110,10 +110,14 @@ impl<C: CallbackServer, B: Browser> TokenProvider<TokenProviderError> for LazyOi
                     config.browser,
                 )
                 .await
+                .map_err(|error| Box::new(error) as TokenProviderError)
             })
             .await?;
 
-        client.access_token().await
+        client
+            .access_token()
+            .await
+            .map_err(|error| Box::new(error) as TokenProviderError)
     }
 }
 
