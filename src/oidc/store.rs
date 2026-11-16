@@ -6,8 +6,8 @@ use tokio::sync::Mutex;
 /// An access token together with its absolute expiration time.
 #[derive(Clone)]
 pub struct StoredAuthorization {
-    access_token: AccessToken,
-    expires_at: SystemTime,
+    pub(crate) access_token: AccessToken,
+    pub(crate) expires_at: SystemTime,
 }
 
 impl StoredAuthorization {

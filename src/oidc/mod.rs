@@ -1,6 +1,7 @@
 mod browser;
 mod callback_server;
 mod client;
+mod keyring_store;
 mod lazy;
 mod store;
 mod stored;
@@ -14,6 +15,7 @@ pub use callback_server::{
     CallbackResponse, CallbackServer, LocalCallbackServer,
 };
 pub use client::{OidcClient, OidcClientError, OidcClientInitError};
+pub use keyring_store::{KeyringAuthorizationStorage, KeyringAuthorizationStorageError};
 pub use lazy::{LazyOidcClient, LazyOidcClientError, LazyOidcClientInitError};
 pub use store::{AuthorizationStorage, InMemoryAuthorizationStorage, StoredAuthorization};
 pub use stored::{StoredTokenProvider, StoredTokenProviderError};
