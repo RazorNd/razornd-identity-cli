@@ -19,30 +19,6 @@ type ConfiguredCoreClient = CoreClient<
     EndpointMaybeSet,
 >;
 
-/// Configuration required to construct an [`OidcClient`].
-pub struct OidcClientConfig {
-    issuer_url: IssuerUrl,
-    client_id: ClientId,
-    redirect_url: RedirectUrl,
-    callback_addr: SocketAddr,
-}
-
-impl OidcClientConfig {
-    pub fn new(
-        issuer_url: IssuerUrl,
-        client_id: ClientId,
-        redirect_url: RedirectUrl,
-        callback_addr: SocketAddr,
-    ) -> Self {
-        Self {
-            issuer_url,
-            client_id,
-            redirect_url,
-            callback_addr,
-        }
-    }
-}
-
 /// OIDC Authorization Code + PKCE token provider for a native CLI client.
 ///
 /// This prototype performs an interactive login on every call. It does not
@@ -56,13 +32,23 @@ pub struct OidcClient<C = LocalCallbackServer, B = SystemBrowser> {
 }
 
 impl OidcClient<LocalCallbackServer, SystemBrowser> {
-    /// Builds an OIDC client from its configuration.
+    /// Builds an OIDC client using the local callback server and system browser.
     pub async fn new(
-        config: OidcClientConfig,
+        issuer_url: IssuerUrl,
+        client_id: ClientId,
+        redirect_url: RedirectUrl,
+        callback_addr: SocketAddr,
         http_client: reqwest::Client,
     ) -> Result<Self, TokenProviderError> {
-        let callback_server = LocalCallbackServer::new(config.callback_addr);
-        Self::with_components(config, http_client, callback_server, SystemBrowser).await
+        Self::with_components(
+            issuer_url,
+            client_id,
+            redirect_url,
+            http_client,
+            LocalCallbackServer::new(callback_addr),
+            SystemBrowser,
+        )
+        .await
     }
 
     /// Builds an OIDC client from individual parameters.
@@ -74,7 +60,10 @@ impl OidcClient<LocalCallbackServer, SystemBrowser> {
         http_client: reqwest::Client,
     ) -> Result<Self, TokenProviderError> {
         Self::new(
-            OidcClientConfig::new(issuer_url, client_id, redirect_url, callback_addr),
+            issuer_url,
+            client_id,
+            redirect_url,
+            callback_addr,
             http_client,
         )
         .await
@@ -84,32 +73,43 @@ impl OidcClient<LocalCallbackServer, SystemBrowser> {
 impl<C: CallbackServer> OidcClient<C, SystemBrowser> {
     /// Builds an OIDC client with a custom callback server.
     pub async fn with_callback_server(
-        config: OidcClientConfig,
+        issuer_url: IssuerUrl,
+        client_id: ClientId,
+        redirect_url: RedirectUrl,
         http_client: reqwest::Client,
         callback_server: C,
     ) -> Result<Self, TokenProviderError> {
-        Self::with_components(config, http_client, callback_server, SystemBrowser).await
+        Self::with_components(
+            issuer_url,
+            client_id,
+            redirect_url,
+            http_client,
+            callback_server,
+            SystemBrowser,
+        )
+        .await
     }
 }
 
 impl<C: CallbackServer, B: Browser> OidcClient<C, B> {
     /// Builds an OIDC client with custom callback server and browser.
     pub async fn with_components(
-        config: OidcClientConfig,
+        issuer_url: IssuerUrl,
+        client_id: ClientId,
+        redirect_url: RedirectUrl,
         http_client: reqwest::Client,
         callback_server: C,
         browser: B,
     ) -> Result<Self, TokenProviderError> {
-        let provider =
-            CoreProviderMetadata::discover_async(config.issuer_url, &http_client).await?;
+        let provider = CoreProviderMetadata::discover_async(issuer_url, &http_client).await?;
 
-        let oidc_client = CoreClient::from_provider_metadata(provider, config.client_id, None)
-            .set_redirect_uri(config.redirect_url.clone());
+        let oidc_client = CoreClient::from_provider_metadata(provider, client_id, None)
+            .set_redirect_uri(redirect_url.clone());
 
         Ok(Self {
             oidc_client,
             http_client,
-            redirect_url: config.redirect_url,
+            redirect_url,
             callback_server,
             browser,
         })
@@ -184,14 +184,15 @@ mod tests {
             .build()?;
         let redirect_url = RedirectUrl::new("http://127.0.0.1:54321/callback".to_owned())?;
         let (callback_server, browser) = successful_callback_components(&redirect_url);
-        let config = OidcClientConfig::new(
+        let client = OidcClient::with_components(
             IssuerUrl::new(issuer)?,
             ClientId::new("test-client".to_owned()),
             redirect_url,
-            "127.0.0.1:54321".parse()?,
-        );
-        let client =
-            OidcClient::with_components(config, http_client, callback_server, browser).await?;
+            http_client,
+            callback_server,
+            browser,
+        )
+        .await?;
 
         let access_token = client.access_token().await?;
         assert_eq!(access_token.expose_secret(), "test-access-token");
