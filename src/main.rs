@@ -1,6 +1,5 @@
 use openidconnect::{ClientId, IssuerUrl, RedirectUrl};
-use razornd_identity_cli::lazy_oidc_client::LazyOidcClient;
-use razornd_identity_cli::token_provider::{TokenProvider, TokenProviderError};
+use razornd_identity_cli::oidc::{LazyOidcClient, TokenProvider, TokenProviderError};
 
 const REDIRECT_URI: &str = "http://127.0.0.1:53780/oauth2/callback";
 

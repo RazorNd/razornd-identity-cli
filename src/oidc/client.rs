@@ -1,4 +1,4 @@
-use crate::token_provider::{AccessToken, TokenProvider, TokenProviderError};
+use crate::oidc::{AccessToken, TokenProvider, TokenProviderError};
 use async_trait::async_trait;
 use openidconnect::{
     AuthorizationCode, ClientId, CsrfToken, EndpointMaybeSet, EndpointNotSet, EndpointSet,

@@ -1,7 +1,5 @@
-use crate::{
-    oidc_client::{OidcClient, OidcClientConfig},
-    token_provider::{AccessToken, TokenProvider, TokenProviderError},
-};
+use super::client::{OidcClient, OidcClientConfig};
+use crate::oidc::{AccessToken, TokenProvider, TokenProviderError};
 use async_trait::async_trait;
 use openidconnect::{ClientId, IssuerUrl, RedirectUrl};
 use std::net::SocketAddr;
