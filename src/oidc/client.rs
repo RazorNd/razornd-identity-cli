@@ -150,3 +150,35 @@ impl<C: CallbackServer> TokenProvider for OidcClient<C> {
         self.authorize().await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::oidc::tests::support::{SuccessfulCallbackServer, mount_oidc_provider};
+    use wiremock::MockServer;
+
+    #[tokio::test]
+    async fn access_token_returns_token_after_authorization_code_flow()
+    -> Result<(), TokenProviderError> {
+        let server = MockServer::start().await;
+        let issuer = server.uri();
+        mount_oidc_provider(&server, 1, 1).await;
+
+        let http_client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
+        let config = OidcClientConfig::new(
+            IssuerUrl::new(issuer)?,
+            ClientId::new("test-client".to_owned()),
+            RedirectUrl::new("http://127.0.0.1:54321/callback".to_owned())?,
+            "127.0.0.1:54321".parse()?,
+        );
+        let client =
+            OidcClient::with_callback_server(config, http_client, SuccessfulCallbackServer).await?;
+
+        let access_token = client.access_token().await?;
+        assert_eq!(access_token.expose_secret(), "test-access-token");
+
+        Ok(())
+    }
+}

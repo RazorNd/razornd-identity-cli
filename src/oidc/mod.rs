@@ -1,6 +1,8 @@
 mod callback_server;
 mod client;
 mod lazy;
+#[cfg(test)]
+mod tests;
 mod token_provider;
 
 pub use callback_server::{CallbackResponse, CallbackServer, LocalCallbackServer};
