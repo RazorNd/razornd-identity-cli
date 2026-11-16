@@ -20,6 +20,7 @@ use std::time::Duration;
 /// Access token returned by a [`TokenProvider`].
 ///
 /// Its debug representation intentionally does not reveal the token value.
+#[derive(Clone)]
 pub struct AccessToken(String);
 
 impl AccessToken {
@@ -47,6 +48,7 @@ impl std::fmt::Debug for AccessToken {
 /// Refresh token returned alongside an access token.
 ///
 /// Its debug representation intentionally does not reveal the token value.
+#[derive(Clone)]
 pub struct RefreshToken(String);
 
 impl RefreshToken {
@@ -72,6 +74,7 @@ impl std::fmt::Debug for RefreshToken {
 }
 
 /// Tokens and lifetime returned by an authorization flow.
+#[derive(Clone)]
 pub struct Authorization {
     access_token: AccessToken,
     refresh_token: Option<RefreshToken>,
@@ -101,6 +104,10 @@ impl Authorization {
 
     pub fn expires_in(&self) -> Option<Duration> {
         self.expires_in
+    }
+
+    pub fn into_parts(self) -> (AccessToken, Option<RefreshToken>, Option<Duration>) {
+        (self.access_token, self.refresh_token, self.expires_in)
     }
 }
 

@@ -2,6 +2,8 @@ mod browser;
 mod callback_server;
 mod client;
 mod lazy;
+mod store;
+mod stored;
 #[cfg(test)]
 mod tests;
 mod token_provider;
@@ -13,6 +15,8 @@ pub use callback_server::{
 };
 pub use client::{OidcClient, OidcClientError, OidcClientInitError};
 pub use lazy::{LazyOidcClient, LazyOidcClientError, LazyOidcClientInitError};
+pub use store::{AuthorizationStorage, InMemoryAuthorizationStorage, StoredAuthorization};
+pub use stored::{StoredTokenProvider, StoredTokenProviderError};
 pub use token_provider::{
     AccessToken, Authorization, AuthorizationProvider, RefreshToken, TokenProvider,
 };
