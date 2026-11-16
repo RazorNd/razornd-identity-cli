@@ -3,11 +3,28 @@ use super::{
     callback_server::{CallbackServer, LocalCallbackServer},
     client::OidcClient,
 };
-use crate::oidc::{AccessToken, TokenProvider, TokenProviderError};
+use crate::oidc::{AccessToken, TokenProvider};
 use async_trait::async_trait;
 use openidconnect::{ClientId, IssuerUrl, RedirectUrl};
 use std::net::SocketAddr;
+use thiserror::Error;
 use tokio::sync::{Mutex, OnceCell};
+
+#[derive(Debug, Error)]
+pub enum LazyOidcClientError {
+    #[error("failed to initialize OIDC client: {0}")]
+    Initialization(#[source] LazyOidcClientInitError),
+    #[error("OIDC token request failed: {0}")]
+    TokenRequest(#[source] super::client::OidcClientError),
+}
+
+#[derive(Debug, Error)]
+pub enum LazyOidcClientInitError {
+    #[error(transparent)]
+    OidcClient(#[from] super::client::OidcClientInitError),
+    #[error("OIDC client configuration is unavailable after a previous initialization failure")]
+    ConfigurationUnavailable,
+}
 
 struct OidcClientConfig<C, B> {
     issuer_url: IssuerUrl,
@@ -21,7 +38,7 @@ struct OidcClientConfig<C, B> {
 /// Lazily initializes an [`OidcClient`] on the first token request.
 ///
 /// Concurrent first requests share the same initialization; if discovery
-/// fails, a later request can retry it.
+/// fails, the initialization error is returned to the caller.
 pub struct LazyOidcClient<C = LocalCallbackServer, B = SystemBrowser> {
     config: Mutex<Option<OidcClientConfig<C, B>>>,
     client: OnceCell<OidcClient<C, B>>,
@@ -93,18 +110,20 @@ impl<C: CallbackServer, B: Browser> LazyOidcClient<C, B> {
 }
 
 #[async_trait]
-impl<C, B> TokenProvider<TokenProviderError> for LazyOidcClient<C, B>
+impl<C, B> TokenProvider<LazyOidcClientError> for LazyOidcClient<C, B>
 where
     C: CallbackServer,
     B: Browser,
 {
-    async fn access_token(&self) -> Result<AccessToken, TokenProviderError> {
+    async fn access_token(&self) -> Result<AccessToken, LazyOidcClientError> {
         let client = self
             .client
             .get_or_try_init(|| async {
-                let config = self.config.lock().await.take().ok_or(
-                    "OIDC client initialization already failed; configuration was consumed",
-                )?;
+                let config = self.config.lock().await.take().ok_or_else(|| {
+                    LazyOidcClientError::Initialization(
+                        LazyOidcClientInitError::ConfigurationUnavailable,
+                    )
+                })?;
                 OidcClient::with_components(
                     config.issuer_url,
                     config.client_id,
@@ -114,21 +133,27 @@ where
                     config.browser,
                 )
                 .await
-                .map_err(|error| Box::new(error) as TokenProviderError)
+                .map_err(|error| {
+                    LazyOidcClientError::Initialization(LazyOidcClientInitError::from(error))
+                })
             })
             .await?;
 
         client
             .access_token()
             .await
-            .map_err(|error| Box::new(error) as TokenProviderError)
+            .map_err(LazyOidcClientError::TokenRequest)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::oidc::tests::support::{mount_oidc_provider, successful_callback_components};
+    use crate::oidc::{
+        OidcClientError, OidcClientInitError, TokenProviderError,
+        tests::support::{mount_oidc_provider, successful_callback_components},
+    };
+    use std::net::TcpListener;
     use wiremock::MockServer;
 
     #[tokio::test]
@@ -173,5 +198,47 @@ mod tests {
 
         server.verify().await;
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn access_token_reports_client_initialization_error() {
+        let server = MockServer::start().await;
+        let client = LazyOidcClient::new(
+            IssuerUrl::new(server.uri()).unwrap(),
+            ClientId::new("test-client".to_owned()),
+            RedirectUrl::new("http://127.0.0.1:54321/callback".to_owned()).unwrap(),
+            "127.0.0.1:54321".parse().unwrap(),
+            reqwest::Client::new(),
+        );
+
+        assert!(matches!(
+            client.access_token().await,
+            Err(LazyOidcClientError::Initialization(
+                LazyOidcClientInitError::OidcClient(OidcClientInitError::Discovery(_))
+            ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn access_token_reports_client_request_error() {
+        let server = MockServer::start().await;
+        mount_oidc_provider(&server, 1, 0).await;
+        let occupied = TcpListener::bind("127.0.0.1:0").unwrap();
+        let callback_addr = occupied.local_addr().unwrap();
+        let client = LazyOidcClient::with_callback_server(
+            IssuerUrl::new(server.uri()).unwrap(),
+            ClientId::new("test-client".to_owned()),
+            RedirectUrl::new(format!("http://{callback_addr}/callback")).unwrap(),
+            reqwest::Client::new(),
+            LocalCallbackServer::new(callback_addr),
+        );
+
+        assert!(matches!(
+            client.access_token().await,
+            Err(LazyOidcClientError::TokenRequest(
+                OidcClientError::CallbackServer(_)
+            ))
+        ));
+        server.verify().await;
     }
 }

@@ -12,5 +12,5 @@ pub use callback_server::{
     CallbackResponse, CallbackServer, LocalCallbackServer,
 };
 pub use client::{OidcClient, OidcClientError, OidcClientInitError};
-pub use lazy::LazyOidcClient;
+pub use lazy::{LazyOidcClient, LazyOidcClientError, LazyOidcClientInitError};
 pub use token_provider::{AccessToken, TokenProvider, TokenProviderError};
