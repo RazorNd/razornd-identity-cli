@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use openidconnect::{RedirectUrl, url::Url};
 use std::{collections::HashMap, net::SocketAddr};
 
-/// Authorization response received by the local callback server.
+/// Authorization response received by the callback listener.
 #[derive(Debug, Default)]
 pub struct CallbackResponse {
     pub code: Option<String>,
@@ -11,19 +11,20 @@ pub struct CallbackResponse {
     pub error: Option<String>,
 }
 
-/// Receives the browser's redirect after authorization.
+/// Waits for a single authorization redirect.
 #[async_trait]
-pub trait CallbackServer: Send + Sync {
-    /// Starts listening before opening the authorization URL, then waits for
-    /// and parses the provider's redirect.
-    async fn receive(
-        &self,
-        authorization_url: &Url,
-        redirect_url: &RedirectUrl,
-    ) -> Result<CallbackResponse, TokenProviderError>;
+pub trait CallbackListener: Send {
+    async fn receive(self) -> Result<CallbackResponse, TokenProviderError>;
 }
 
-/// Local loopback HTTP callback listener for a native CLI.
+/// Binds a listener for the configured redirect URI.
+pub trait CallbackServer: Send + Sync {
+    type Listener: CallbackListener;
+
+    fn listen(&self, redirect_url: &RedirectUrl) -> Result<Self::Listener, TokenProviderError>;
+}
+
+/// Local loopback HTTP callback server for a native CLI.
 pub struct LocalCallbackServer {
     callback_addr: SocketAddr,
 }
@@ -34,20 +35,27 @@ impl LocalCallbackServer {
     }
 }
 
-#[async_trait]
-impl CallbackServer for LocalCallbackServer {
-    async fn receive(
-        &self,
-        authorization_url: &Url,
-        redirect_url: &RedirectUrl,
-    ) -> Result<CallbackResponse, TokenProviderError> {
-        let server = tiny_http::Server::http(self.callback_addr)?;
-        webbrowser::open(authorization_url.as_str())?;
-        println!("Ожидание ответа от провайдера на {redirect_url} ...");
+pub struct LocalCallbackListener {
+    server: tiny_http::Server,
+    expected_path: String,
+}
 
-        let expected_path = redirect_url.url().path().to_owned();
-        let callback = tokio::task::spawn_blocking(move || {
-            let request = server.recv()?;
+impl CallbackServer for LocalCallbackServer {
+    type Listener = LocalCallbackListener;
+
+    fn listen(&self, redirect_url: &RedirectUrl) -> Result<Self::Listener, TokenProviderError> {
+        Ok(LocalCallbackListener {
+            server: tiny_http::Server::http(self.callback_addr)?,
+            expected_path: redirect_url.url().path().to_owned(),
+        })
+    }
+}
+
+#[async_trait]
+impl CallbackListener for LocalCallbackListener {
+    async fn receive(self) -> Result<CallbackResponse, TokenProviderError> {
+        tokio::task::spawn_blocking(move || {
+            let request = self.server.recv()?;
             if request.method() != &tiny_http::Method::Get {
                 request.respond(
                     tiny_http::Response::from_string("Method not allowed").with_status_code(405),
@@ -58,7 +66,7 @@ impl CallbackServer for LocalCallbackServer {
             }
 
             let url = Url::parse(&format!("http://localhost{}", request.url()))?;
-            if url.path() != expected_path {
+            if url.path() != self.expected_path {
                 request
                     .respond(tiny_http::Response::from_string("Not found").with_status_code(404))?;
                 return Err::<CallbackResponse, TokenProviderError>(
@@ -90,8 +98,45 @@ impl CallbackServer for LocalCallbackServer {
                 error: params.remove("error"),
             })
         })
-        .await??;
+        .await?
+    }
+}
 
-        Ok(callback)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[tokio::test]
+    async fn local_callback_server_receives_browser_redirect() -> Result<(), TokenProviderError> {
+        let probe = TcpListener::bind("127.0.0.1:0")?;
+        let callback_addr = probe.local_addr()?;
+        drop(probe);
+
+        let redirect_url = RedirectUrl::new(format!("http://{callback_addr}/oauth2/callback"))?;
+        let callback_server = LocalCallbackServer::new(callback_addr);
+        let listener = callback_server.listen(&redirect_url)?;
+        let callback_url = redirect_url.url().clone();
+        let request = tokio::spawn(async move {
+            let response = reqwest::Client::new()
+                .get(callback_url)
+                .query(&[("code", "test-authorization-code"), ("state", "test-state")])
+                .send()
+                .await?;
+            let status = response.status();
+            let body = response.text().await?;
+            Ok::<_, reqwest::Error>((status, body))
+        });
+
+        let callback = listener.receive().await?;
+        let (status, body) = request.await??;
+
+        assert_eq!(callback.code.as_deref(), Some("test-authorization-code"));
+        assert_eq!(callback.state.as_deref(), Some("test-state"));
+        assert_eq!(callback.error, None);
+        assert_eq!(status, reqwest::StatusCode::OK);
+        assert!(body.contains("Авторизация завершена"));
+
+        Ok(())
     }
 }

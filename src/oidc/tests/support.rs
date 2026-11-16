@@ -1,41 +1,94 @@
-use crate::oidc::{CallbackResponse, CallbackServer, TokenProviderError};
+use crate::oidc::{
+    Browser, CallbackListener, CallbackResponse, CallbackServer, TokenProviderError,
+};
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use url::Url;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{method, path},
 };
 
-pub(crate) struct SuccessfulCallbackServer;
+pub(crate) struct SuccessfulCallbackServer {
+    state: Arc<Mutex<Option<String>>>,
+}
+
+impl CallbackServer for SuccessfulCallbackServer {
+    type Listener = SuccessfulCallbackListener;
+
+    fn listen(
+        &self,
+        _redirect_url: &openidconnect::RedirectUrl,
+    ) -> Result<Self::Listener, TokenProviderError> {
+        Ok(SuccessfulCallbackListener {
+            state: self.state.clone(),
+        })
+    }
+}
+
+pub(crate) struct SuccessfulCallbackListener {
+    state: Arc<Mutex<Option<String>>>,
+}
 
 #[async_trait]
-impl CallbackServer for SuccessfulCallbackServer {
-    async fn receive(
-        &self,
-        authorization_url: &Url,
-        redirect_url: &openidconnect::RedirectUrl,
-    ) -> Result<CallbackResponse, TokenProviderError> {
-        let params: HashMap<_, _> = authorization_url.query_pairs().into_owned().collect();
+impl CallbackListener for SuccessfulCallbackListener {
+    async fn receive(self) -> Result<CallbackResponse, TokenProviderError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| "callback state lock poisoned")?
+            .take();
+        Ok(CallbackResponse {
+            code: Some("test-authorization-code".to_owned()),
+            state,
+            error: None,
+        })
+    }
+}
+
+pub(crate) struct SuccessfulBrowser {
+    state: Arc<Mutex<Option<String>>>,
+    redirect_uri: String,
+}
+
+impl Browser for SuccessfulBrowser {
+    fn open(&self, authorization_url: &Url) -> Result<(), TokenProviderError> {
+        let params: std::collections::HashMap<_, _> =
+            authorization_url.query_pairs().into_owned().collect();
         assert_eq!(
             params.get("response_type").map(String::as_str),
             Some("code")
         );
         assert_eq!(
             params.get("redirect_uri").map(String::as_str),
-            Some(redirect_url.url().as_str())
+            Some(self.redirect_uri.as_str())
         );
         assert_eq!(
             params.get("code_challenge_method").map(String::as_str),
             Some("S256")
         );
 
-        Ok(CallbackResponse {
-            code: Some("test-authorization-code".to_owned()),
-            state: params.get("state").cloned(),
-            error: None,
-        })
+        *self
+            .state
+            .lock()
+            .map_err(|_| "callback state lock poisoned")? = params.get("state").cloned();
+        Ok(())
     }
+}
+
+pub(crate) fn successful_callback_components(
+    redirect_url: &openidconnect::RedirectUrl,
+) -> (SuccessfulCallbackServer, SuccessfulBrowser) {
+    let state = Arc::new(Mutex::new(None));
+    (
+        SuccessfulCallbackServer {
+            state: state.clone(),
+        },
+        SuccessfulBrowser {
+            state,
+            redirect_uri: redirect_url.url().as_str().to_owned(),
+        },
+    )
 }
 
 pub(crate) async fn mount_oidc_provider(

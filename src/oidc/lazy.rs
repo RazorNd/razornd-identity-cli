@@ -1,4 +1,5 @@
 use super::{
+    browser::{Browser, SystemBrowser},
     callback_server::{CallbackServer, LocalCallbackServer},
     client::{OidcClient, OidcClientConfig},
 };
@@ -12,14 +13,15 @@ use tokio::sync::{Mutex, OnceCell};
 ///
 /// Concurrent first requests share the same initialization; if discovery
 /// fails, a later request can retry it.
-pub struct LazyOidcClient<C = LocalCallbackServer> {
+pub struct LazyOidcClient<C = LocalCallbackServer, B = SystemBrowser> {
     config: Mutex<Option<OidcClientConfig>>,
     callback_server: Mutex<Option<C>>,
-    client: OnceCell<OidcClient<C>>,
+    browser: Mutex<Option<B>>,
+    client: OnceCell<OidcClient<C, B>>,
     http_client: reqwest::Client,
 }
 
-impl LazyOidcClient<LocalCallbackServer> {
+impl LazyOidcClient<LocalCallbackServer, SystemBrowser> {
     /// Creates the wrapper without contacting the OIDC provider.
     pub fn new(
         issuer_url: IssuerUrl,
@@ -28,18 +30,19 @@ impl LazyOidcClient<LocalCallbackServer> {
         callback_addr: SocketAddr,
         http_client: reqwest::Client,
     ) -> Self {
-        Self::with_callback_server(
+        Self::with_components(
             issuer_url,
             client_id,
             redirect_url,
             callback_addr,
             http_client,
             LocalCallbackServer::new(callback_addr),
+            SystemBrowser,
         )
     }
 }
 
-impl<C: CallbackServer> LazyOidcClient<C> {
+impl<C: CallbackServer> LazyOidcClient<C, SystemBrowser> {
     /// Creates the wrapper with a custom callback server, without contacting
     /// the OIDC provider.
     pub fn with_callback_server(
@@ -50,6 +53,29 @@ impl<C: CallbackServer> LazyOidcClient<C> {
         http_client: reqwest::Client,
         callback_server: C,
     ) -> Self {
+        Self::with_components(
+            issuer_url,
+            client_id,
+            redirect_url,
+            callback_addr,
+            http_client,
+            callback_server,
+            SystemBrowser,
+        )
+    }
+}
+
+impl<C: CallbackServer, B: Browser> LazyOidcClient<C, B> {
+    /// Creates the wrapper with custom callback server and browser.
+    pub fn with_components(
+        issuer_url: IssuerUrl,
+        client_id: ClientId,
+        redirect_url: RedirectUrl,
+        callback_addr: SocketAddr,
+        http_client: reqwest::Client,
+        callback_server: C,
+        browser: B,
+    ) -> Self {
         Self {
             config: Mutex::new(Some(OidcClientConfig::new(
                 issuer_url,
@@ -58,6 +84,7 @@ impl<C: CallbackServer> LazyOidcClient<C> {
                 callback_addr,
             ))),
             callback_server: Mutex::new(Some(callback_server)),
+            browser: Mutex::new(Some(browser)),
             client: OnceCell::new(),
             http_client,
         }
@@ -65,21 +92,30 @@ impl<C: CallbackServer> LazyOidcClient<C> {
 }
 
 #[async_trait]
-impl<C: CallbackServer> TokenProvider for LazyOidcClient<C> {
+impl<C: CallbackServer, B: Browser> TokenProvider for LazyOidcClient<C, B> {
     async fn access_token(&self) -> Result<AccessToken, TokenProviderError> {
-        let client = self
-            .client
-            .get_or_try_init(|| async {
-                let config = self.config.lock().await.take().ok_or(
-                    "OIDC client initialization already failed; configuration was consumed",
-                )?;
-                let callback_server = self.callback_server.lock().await.take().ok_or(
-                    "OIDC client initialization already failed; callback server was consumed",
-                )?;
-                OidcClient::with_callback_server(config, self.http_client.clone(), callback_server)
+        let client =
+            self.client
+                .get_or_try_init(|| async {
+                    let config = self.config.lock().await.take().ok_or(
+                        "OIDC client initialization already failed; configuration was consumed",
+                    )?;
+                    let callback_server = self.callback_server.lock().await.take().ok_or(
+                        "OIDC client initialization already failed; callback server was consumed",
+                    )?;
+                    let browser =
+                        self.browser.lock().await.take().ok_or(
+                            "OIDC client initialization already failed; browser was consumed",
+                        )?;
+                    OidcClient::with_components(
+                        config,
+                        self.http_client.clone(),
+                        callback_server,
+                        browser,
+                    )
                     .await
-            })
-            .await?;
+                })
+                .await?;
 
         client.access_token().await
     }
@@ -88,7 +124,7 @@ impl<C: CallbackServer> TokenProvider for LazyOidcClient<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::oidc::tests::support::{SuccessfulCallbackServer, mount_oidc_provider};
+    use crate::oidc::tests::support::{mount_oidc_provider, successful_callback_components};
     use wiremock::MockServer;
 
     #[tokio::test]
@@ -113,15 +149,18 @@ mod tests {
         let issuer = server.uri();
         mount_oidc_provider(&server, 1, 2).await;
 
-        let client = LazyOidcClient::with_callback_server(
+        let redirect_url = RedirectUrl::new("http://127.0.0.1:54321/callback".to_owned())?;
+        let (callback_server, browser) = successful_callback_components(&redirect_url);
+        let client = LazyOidcClient::with_components(
             IssuerUrl::new(issuer)?,
             ClientId::new("test-client".to_owned()),
-            RedirectUrl::new("http://127.0.0.1:54321/callback".to_owned())?,
+            redirect_url,
             "127.0.0.1:54321".parse()?,
             reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .build()?,
-            SuccessfulCallbackServer,
+            callback_server,
+            browser,
         );
 
         for _ in 0..2 {
