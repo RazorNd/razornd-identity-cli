@@ -3,6 +3,8 @@ use async_trait::async_trait;
 use openidconnect::{RedirectUrl, url::Url};
 use std::{collections::HashMap, net::SocketAddr};
 
+const CALLBACK_COMPLETE_HTML: &str = include_str!("callback_complete.html");
+
 /// Authorization response received by the callback listener.
 #[derive(Debug, Default)]
 pub struct CallbackResponse {
@@ -88,9 +90,12 @@ impl CallbackListener for LocalCallbackListener {
                 }
             }
 
-            request.respond(tiny_http::Response::from_string(
-                "Авторизация завершена. Можно закрыть это окно.",
-            ))?;
+            let content_type =
+                tiny_http::Header::from_bytes("Content-Type", "text/html; charset=utf-8")
+                    .expect("static Content-Type header is valid");
+            request.respond(
+                tiny_http::Response::from_string(CALLBACK_COMPLETE_HTML).with_header(content_type),
+            )?;
 
             Ok(CallbackResponse {
                 code: params.remove("code"),
@@ -124,18 +129,25 @@ mod tests {
                 .send()
                 .await?;
             let status = response.status();
+            let content_type = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
             let body = response.text().await?;
-            Ok::<_, reqwest::Error>((status, body))
+            Ok::<_, reqwest::Error>((status, content_type, body))
         });
 
         let callback = listener.receive().await?;
-        let (status, body) = request.await??;
+        let (status, content_type, body) = request.await??;
 
         assert_eq!(callback.code.as_deref(), Some("test-authorization-code"));
         assert_eq!(callback.state.as_deref(), Some("test-state"));
         assert_eq!(callback.error, None);
         assert_eq!(status, reqwest::StatusCode::OK);
-        assert!(body.contains("Авторизация завершена"));
+        assert_eq!(content_type.as_deref(), Some("text/html; charset=utf-8"));
+        assert!(body.contains("Вернитесь в CLI"));
+        assert!(body.contains("data:image/svg+xml;base64,"));
 
         Ok(())
     }
