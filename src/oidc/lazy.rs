@@ -93,7 +93,7 @@ impl<C: CallbackServer, B: Browser> LazyOidcClient<C, B> {
 }
 
 #[async_trait]
-impl<C: CallbackServer, B: Browser> TokenProvider for LazyOidcClient<C, B> {
+impl<C: CallbackServer, B: Browser> TokenProvider<TokenProviderError> for LazyOidcClient<C, B> {
     async fn access_token(&self) -> Result<AccessToken, TokenProviderError> {
         let client = self
             .client

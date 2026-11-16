@@ -160,7 +160,7 @@ impl<C: CallbackServer, B: Browser> OidcClient<C, B> {
 }
 
 #[async_trait]
-impl<C: CallbackServer, B: Browser> TokenProvider for OidcClient<C, B> {
+impl<C: CallbackServer, B: Browser> TokenProvider<TokenProviderError> for OidcClient<C, B> {
     async fn access_token(&self) -> Result<AccessToken, TokenProviderError> {
         self.authorize().await
     }

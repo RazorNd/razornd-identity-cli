@@ -43,6 +43,9 @@ impl std::fmt::Debug for AccessToken {
 
 /// Provides an access token suitable for calling the identity service.
 #[async_trait]
-pub trait TokenProvider: Send + Sync {
-    async fn access_token(&self) -> Result<AccessToken, TokenProviderError>;
+pub trait TokenProvider<E = TokenProviderError>: Send + Sync
+where
+    E: Send,
+{
+    async fn access_token(&self) -> Result<AccessToken, E>;
 }
