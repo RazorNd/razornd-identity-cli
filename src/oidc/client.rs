@@ -250,7 +250,6 @@ where
         self.browser
             .open(&authorization_url)
             .map_err(OidcClientError::Browser)?;
-        println!("Ожидание ответа от провайдера на {} ...", self.redirect_url);
         let callback = listener
             .receive()
             .await
