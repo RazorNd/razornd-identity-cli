@@ -129,7 +129,7 @@ pub enum OidcClientError {
 pub struct OidcClient<C = LocalCallbackServer, B = SystemBrowser> {
     oidc_client: ConfiguredCoreClient,
     http_client: reqwest::Client,
-    redirect_url: RedirectUrl,
+    redirect_path: String,
     callback_server: C,
     browser: B,
 }
@@ -212,13 +212,14 @@ where
             .await
             .map_err(|error| OidcClientInitError::Discovery(error.to_string()))?;
 
+        let redirect_path = redirect_url.url().path().to_string();
         let oidc_client = ConfiguredCoreClient::from_provider_metadata(provider, client_id, None)
-            .set_redirect_uri(redirect_url.clone());
+            .set_redirect_uri(redirect_url);
 
         Ok(Self {
             oidc_client,
             http_client,
-            redirect_url,
+            redirect_path,
             callback_server,
             browser,
         })
@@ -245,7 +246,7 @@ where
 
         let listener = self
             .callback_server
-            .listen(&self.redirect_url)
+            .listen(self.redirect_path.clone())
             .map_err(OidcClientError::CallbackServer)?;
         self.browser
             .open(&authorization_url)

@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use openidconnect::{RedirectUrl, url::Url};
+use openidconnect::url::Url;
 use std::{collections::HashMap, io, net::SocketAddr};
 use thiserror::Error;
 
@@ -83,7 +83,10 @@ pub trait CallbackListener: Send {
 pub trait CallbackServer: Send + Sync {
     type Listener: CallbackListener;
 
-    fn listen(&self, redirect_url: &RedirectUrl) -> Result<Self::Listener, CallbackListenError>;
+    fn listen(
+        &self,
+        redirect_path: impl Into<String>,
+    ) -> Result<Self::Listener, CallbackListenError>;
 }
 
 /// Local loopback HTTP callback server for a native CLI.
@@ -157,10 +160,13 @@ impl LocalCallbackListener {
 impl CallbackServer for LocalCallbackServer {
     type Listener = LocalCallbackListener;
 
-    fn listen(&self, redirect_url: &RedirectUrl) -> Result<Self::Listener, CallbackListenError> {
+    fn listen(
+        &self,
+        redirect_path: impl Into<String>,
+    ) -> Result<Self::Listener, CallbackListenError> {
         Ok(LocalCallbackListener {
             server: tiny_http::Server::http(self.callback_addr).map_err(CallbackListenError)?,
-            expected_path: redirect_url.url().path().to_owned(),
+            expected_path: redirect_path.into(),
         })
     }
 }
@@ -228,8 +234,7 @@ mod tests {
     fn listen_returns_typed_error_when_address_is_in_use() {
         let occupied = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = occupied.local_addr().unwrap();
-        let redirect_url = RedirectUrl::new(format!("http://{address}/callback")).unwrap();
-        let result = LocalCallbackServer::new(address).listen(&redirect_url);
+        let result = LocalCallbackServer::new(address).listen("/callback");
         let error = result.err().expect("binding an occupied address must fail");
 
         assert!(error.source().is_some());
@@ -245,10 +250,8 @@ mod tests {
         let callback_addr = probe.local_addr().unwrap();
         drop(probe);
 
-        let redirect_url =
-            RedirectUrl::new(format!("http://{callback_addr}/oauth2/callback")).unwrap();
         let listener = LocalCallbackServer::new(callback_addr)
-            .listen(&redirect_url)
+            .listen("/oauth2/callback")
             .unwrap();
         let request_url = format!("http://{callback_addr}{request_path}");
         let request = tokio::spawn(async move {
@@ -271,13 +274,11 @@ mod tests {
         let callback_addr = probe.local_addr()?;
         drop(probe);
 
-        let redirect_url = RedirectUrl::new(format!("http://{callback_addr}/oauth2/callback"))?;
         let callback_server = LocalCallbackServer::new(callback_addr);
-        let listener = callback_server.listen(&redirect_url)?;
-        let callback_url = redirect_url.url().clone();
+        let listener = callback_server.listen("/oauth2/callback")?;
         let request = tokio::spawn(async move {
             let response = reqwest::Client::new()
-                .get(callback_url)
+                .get(format!("http://{callback_addr}/oauth2/callback"))
                 .query(&[
                     ("code", "test-authorization-code"),
                     ("state", "test-state"),
@@ -316,14 +317,12 @@ mod tests {
         let callback_addr = probe.local_addr().unwrap();
         drop(probe);
 
-        let redirect_url =
-            RedirectUrl::new(format!("http://{callback_addr}/oauth2/callback")).unwrap();
         let callback_server = LocalCallbackServer::new(callback_addr);
-        let listener = callback_server.listen(&redirect_url).unwrap();
-        let callback_url = redirect_url.url().clone();
+        let listener = callback_server.listen("/oauth2/callback").unwrap();
+
         let request = tokio::spawn(async move {
             reqwest::Client::new()
-                .get(callback_url)
+                .get(format!("http://{callback_addr}/oauth2/callback"))
                 .query(&[
                     ("code", "first-code"),
                     ("code", "second-code"),

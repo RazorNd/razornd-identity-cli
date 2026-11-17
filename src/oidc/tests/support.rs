@@ -21,7 +21,7 @@ impl CallbackServer for SuccessfulCallbackServer {
 
     fn listen(
         &self,
-        _redirect_url: &openidconnect::RedirectUrl,
+        _redirect_path: impl Into<String>,
     ) -> Result<Self::Listener, CallbackListenError> {
         Ok(SuccessfulCallbackListener {
             state: self.state.clone(),
@@ -128,7 +128,10 @@ pub(crate) struct TestCallbackListener {
 impl CallbackServer for TestCallbackServer {
     type Listener = TestCallbackListener;
 
-    fn listen(&self, _redirect_url: &RedirectUrl) -> Result<Self::Listener, CallbackListenError> {
+    fn listen(
+        &self,
+        _redirect_path: impl Into<String>,
+    ) -> Result<Self::Listener, CallbackListenError> {
         if matches!(self.mode, CallbackMode::ListenError) {
             return Err(CallbackListenError(
                 std::io::Error::other("test callback bind error").into(),

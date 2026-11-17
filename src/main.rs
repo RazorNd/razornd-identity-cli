@@ -9,9 +9,20 @@ mod cli;
 mod client;
 
 const REDIRECT_URI: &str = "http://127.0.0.1:53780/oauth2/callback";
+const ISSUER_URI: &str = "https://auth.razornd.ru";
 
 fn create_client() -> anyhow::Result<client::IdentityClient> {
-    let issuer_url = IssuerUrl::new("http://localhost:8080".to_owned())?;
+    let issuer_uri = option_env!("RAZORND_IDENTITY_ISSUER_URI")
+        .unwrap_or(ISSUER_URI)
+        .to_owned();
+    let redirect_url = option_env!("RAZORND_IDENTITY_REDIRECT_URI")
+        .unwrap_or(REDIRECT_URI)
+        .parse::<Url>()?;
+    let client_id = option_env!("RAZORND_IDENTITY_CLIENT_ID")
+        .unwrap_or("http-client")
+        .to_owned();
+
+    let issuer_url = IssuerUrl::new(issuer_uri)?;
     let base_url = issuer_url.url().clone();
 
     // Reuse this client (or its cheap clone) for OidcClient and IdentityClient.
@@ -19,10 +30,9 @@ fn create_client() -> anyhow::Result<client::IdentityClient> {
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
 
-    let redirect_url = REDIRECT_URI.parse::<Url>()?;
     let authorizer = LazyOidcClient::new(
         issuer_url,
-        ClientId::new("http-client".to_owned()),
+        ClientId::new(client_id),
         RedirectUrl::from_url(redirect_url.clone()),
         redirect_url.authority().parse()?,
         http_client.clone(),
