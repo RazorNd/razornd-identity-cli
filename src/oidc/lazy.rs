@@ -64,27 +64,6 @@ impl LazyOidcClient<LocalCallbackServer, SystemBrowser> {
     }
 }
 
-impl<C: CallbackServer> LazyOidcClient<C, SystemBrowser> {
-    /// Creates the wrapper with a custom callback server, without contacting
-    /// the OIDC provider.
-    pub fn with_callback_server(
-        issuer_url: IssuerUrl,
-        client_id: ClientId,
-        redirect_url: RedirectUrl,
-        http_client: reqwest::Client,
-        callback_server: C,
-    ) -> Self {
-        Self::with_components(
-            issuer_url,
-            client_id,
-            redirect_url,
-            http_client,
-            callback_server,
-            SystemBrowser,
-        )
-    }
-}
-
 impl<C: CallbackServer, B: Browser> LazyOidcClient<C, B> {
     /// Creates the wrapper with custom callback server and browser.
     pub fn with_components(
@@ -239,12 +218,13 @@ mod tests {
         mount_oidc_provider(&server, 1, 0).await;
         let occupied = TcpListener::bind("127.0.0.1:0").unwrap();
         let callback_addr = occupied.local_addr().unwrap();
-        let client = LazyOidcClient::with_callback_server(
+        let client = LazyOidcClient::with_components(
             IssuerUrl::new(server.uri()).unwrap(),
             ClientId::new("test-client".to_owned()),
             RedirectUrl::new(format!("http://{callback_addr}/callback")).unwrap(),
             reqwest::Client::new(),
             LocalCallbackServer::new(callback_addr),
+            SystemBrowser,
         );
 
         assert!(matches!(
