@@ -11,7 +11,29 @@ The service currently exposes administrative account endpoints under `/api/admin
 - `PATCH /api/admin/accounts/{username}` — update the password and/or enabled status.
 - `DELETE /api/admin/accounts/{username}` — disable an account.
 
-The CLI is an early-stage project; its implementation and command syntax are not yet available. The API is protected by the identity service's administrative authorization, so clients must be configured with appropriate access.
+The API is protected by the identity service's administrative authorization, so clients must be configured with appropriate access.
+
+Create an account interactively, or provide the positional username. When prompted, an empty password asks the service to generate one:
+
+```bash
+cargo run -- user create
+cargo run -- user create new-user
+cargo run -- user create new-user --disabled
+printf '%s' "$USER_PASSWORD" | cargo run -- user create new-user --password-stdin
+```
+
+Get, update, and disable accounts:
+
+```bash
+cargo run -- user get new-user
+cargo run -- user update new-user --password --enabled
+cargo run -- user update new-user --password
+printf '%s' "$USER_PASSWORD" | cargo run -- user update new-user --password-stdin
+cargo run -- user update new-user --disabled
+cargo run -- user disable new-user
+```
+
+`user update` changes only the fields selected by its options. `--password` prompts for a new password; alternatively, `--password-stdin` reads it from stdin. These options conflict. Set account status explicitly with `--enabled` or `--disabled` (also available as `--enable` or `--disable`). At least one password or status option is required.
 
 ## Development
 

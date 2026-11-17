@@ -1,28 +1,16 @@
-use anyhow::Result;
 use openidconnect::{ClientId, IssuerUrl, RedirectUrl};
 use razornd_identity_cli::RazorIdentityClient;
 use razornd_identity_cli::oidc::{
-    KeyringAuthorizationStorage, KeyringAuthorizationStorageError, LazyOidcClient,
-    LazyOidcClientError, StoredTokenProvider, StoredTokenProviderError,
+    KeyringAuthorizationStorage, LazyOidcClient, StoredTokenProvider,
 };
 use url::Url;
 
+mod cli;
+mod client;
+
 const REDIRECT_URI: &str = "http://127.0.0.1:53780/oauth2/callback";
 
-type IdentityClient = RazorIdentityClient<
-    StoredTokenProvider<KeyringAuthorizationStorage, LazyOidcClient, LazyOidcClientError>,
-    StoredTokenProviderError<LazyOidcClientError, KeyringAuthorizationStorageError>,
->;
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    let client = create_client()?;
-
-    println!("{:?}", client.get_account("test").await?);
-    Ok(())
-}
-
-fn create_client() -> Result<IdentityClient> {
+fn create_client() -> anyhow::Result<client::IdentityClient> {
     let issuer_url = IssuerUrl::new("http://localhost:8080".to_owned())?;
     let base_url = issuer_url.url().clone();
 
@@ -42,6 +30,14 @@ fn create_client() -> Result<IdentityClient> {
     let storage = KeyringAuthorizationStorage::new("razornd-identity-cli", "default");
     let token_provider = StoredTokenProvider::new(storage, authorizer);
 
-    let client = RazorIdentityClient::new(base_url, token_provider, http_client);
-    Ok(client)
+    Ok(RazorIdentityClient::new(
+        base_url,
+        token_provider,
+        http_client,
+    ))
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    cli::run(create_client()?).await
 }
