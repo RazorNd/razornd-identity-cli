@@ -4,7 +4,7 @@ use crate::oidc::{
 };
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use openidconnect::{ClientId, IssuerUrl, RedirectUrl};
+use openidconnect::{ClientId, IssuerUrl, RedirectUrl, Scope};
 use std::sync::{Arc, Mutex};
 use url::Url;
 use wiremock::{
@@ -224,6 +224,7 @@ pub(crate) async fn test_client(
     OidcClient::with_components(
         IssuerUrl::new(issuer).expect("valid test issuer URL"),
         ClientId::new("test-client".to_owned()),
+        vec![Scope::new("openid".to_owned())],
         redirect_url,
         reqwest::Client::new(),
         TestCallbackServer {

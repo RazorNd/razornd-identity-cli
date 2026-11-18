@@ -5,7 +5,7 @@ use super::{
 };
 use crate::oidc::{Authorization, AuthorizationProvider};
 use async_trait::async_trait;
-use openidconnect::{ClientId, IssuerUrl, RedirectUrl};
+use openidconnect::{ClientId, IssuerUrl, RedirectUrl, Scope};
 use std::net::SocketAddr;
 use thiserror::Error;
 use tokio::sync::{Mutex, OnceCell};
@@ -29,6 +29,7 @@ pub enum LazyOidcClientInitError {
 struct OidcClientConfig<C, B> {
     issuer_url: IssuerUrl,
     client_id: ClientId,
+    scopes: Vec<Scope>,
     redirect_url: RedirectUrl,
     http_client: reqwest::Client,
     callback_server: C,
@@ -49,6 +50,7 @@ impl LazyOidcClient<LocalCallbackServer, SystemBrowser> {
     pub fn new(
         issuer_url: IssuerUrl,
         client_id: ClientId,
+        scopes: Vec<Scope>,
         redirect_url: RedirectUrl,
         callback_addr: SocketAddr,
         http_client: reqwest::Client,
@@ -56,6 +58,7 @@ impl LazyOidcClient<LocalCallbackServer, SystemBrowser> {
         Self::with_components(
             issuer_url,
             client_id,
+            scopes,
             redirect_url,
             http_client,
             LocalCallbackServer::new(callback_addr),
@@ -69,6 +72,7 @@ impl<C: CallbackServer, B: Browser> LazyOidcClient<C, B> {
     pub fn with_components(
         issuer_url: IssuerUrl,
         client_id: ClientId,
+        scopes: Vec<Scope>,
         redirect_url: RedirectUrl,
         http_client: reqwest::Client,
         callback_server: C,
@@ -78,6 +82,7 @@ impl<C: CallbackServer, B: Browser> LazyOidcClient<C, B> {
             config: Mutex::new(Some(OidcClientConfig {
                 issuer_url,
                 client_id,
+                scopes,
                 redirect_url,
                 http_client,
                 callback_server,
@@ -106,6 +111,7 @@ where
                 OidcClient::with_components(
                     config.issuer_url,
                     config.client_id,
+                    config.scopes,
                     config.redirect_url,
                     config.http_client,
                     config.callback_server,
@@ -143,6 +149,7 @@ mod tests {
         let _client = LazyOidcClient::new(
             IssuerUrl::new(server.uri()).unwrap(),
             ClientId::new("test-client".to_owned()),
+            vec![Scope::new("openid".to_owned())],
             RedirectUrl::new("http://127.0.0.1:54321/callback".to_owned()).unwrap(),
             "127.0.0.1:54321".parse().unwrap(),
             reqwest::Client::new(),
@@ -162,6 +169,7 @@ mod tests {
         let client = LazyOidcClient::with_components(
             IssuerUrl::new(issuer)?,
             ClientId::new("test-client".to_owned()),
+            vec![Scope::new("openid".to_owned())],
             redirect_url,
             reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
@@ -199,6 +207,7 @@ mod tests {
         let client = LazyOidcClient::new(
             IssuerUrl::new(server.uri()).unwrap(),
             ClientId::new("test-client".to_owned()),
+            vec![Scope::new("openid".to_owned())],
             RedirectUrl::new("http://127.0.0.1:54321/callback".to_owned()).unwrap(),
             "127.0.0.1:54321".parse().unwrap(),
             reqwest::Client::new(),
@@ -221,6 +230,7 @@ mod tests {
         let client = LazyOidcClient::with_components(
             IssuerUrl::new(server.uri()).unwrap(),
             ClientId::new("test-client".to_owned()),
+            vec![Scope::new("openid".to_owned())],
             RedirectUrl::new(format!("http://{callback_addr}/callback")).unwrap(),
             reqwest::Client::new(),
             LocalCallbackServer::new(callback_addr),

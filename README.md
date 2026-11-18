@@ -13,6 +13,14 @@ The service currently exposes administrative account endpoints under `/api/admin
 
 The API is protected by the identity service's administrative authorization, so clients must be configured with appropriate access.
 
+The authorization request asks for `openid accounts:admin` by default. Configure the requested scopes as a whitespace-separated list with `RAZORND_IDENTITY_SCOPES`, in the same way as `RAZORND_IDENTITY_CLIENT_ID`. These `RAZORND_IDENTITY_*` settings are read at compile time:
+
+```bash
+RAZORND_IDENTITY_SCOPES="openid accounts:admin" \
+RAZORND_IDENTITY_CLIENT_ID="http-client" \
+cargo run -- user get some-user
+```
+
 Create an account interactively, or provide the positional username. When prompted, an empty password asks the service to generate one:
 
 ```bash

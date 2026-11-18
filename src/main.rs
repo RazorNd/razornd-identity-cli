@@ -1,4 +1,4 @@
-use openidconnect::{ClientId, IssuerUrl, RedirectUrl};
+use openidconnect::{ClientId, IssuerUrl, RedirectUrl, Scope};
 use razornd_identity_cli::RazorIdentityClient;
 use razornd_identity_cli::oidc::{
     KeyringAuthorizationStorage, LazyOidcClient, StoredTokenProvider,
@@ -10,6 +10,7 @@ mod client;
 
 const REDIRECT_URI: &str = "http://127.0.0.1:53780/oauth2/callback";
 const ISSUER_URI: &str = "https://auth.razornd.ru";
+const DEFAULT_SCOPES: &str = "openid accounts:admin";
 
 fn create_client() -> anyhow::Result<client::IdentityClient> {
     let issuer_uri = option_env!("RAZORND_IDENTITY_ISSUER_URI")
@@ -21,6 +22,11 @@ fn create_client() -> anyhow::Result<client::IdentityClient> {
     let client_id = option_env!("RAZORND_IDENTITY_CLIENT_ID")
         .unwrap_or("http-client")
         .to_owned();
+    let scopes = option_env!("RAZORND_IDENTITY_SCOPES")
+        .unwrap_or(DEFAULT_SCOPES)
+        .split_whitespace()
+        .map(|scope| Scope::new(scope.to_owned()))
+        .collect();
 
     let issuer_url = IssuerUrl::new(issuer_uri)?;
     let base_url = issuer_url.url().clone();
@@ -33,6 +39,7 @@ fn create_client() -> anyhow::Result<client::IdentityClient> {
     let authorizer = LazyOidcClient::new(
         issuer_url,
         ClientId::new(client_id),
+        scopes,
         RedirectUrl::from_url(redirect_url.clone()),
         redirect_url.authority().parse()?,
         http_client.clone(),

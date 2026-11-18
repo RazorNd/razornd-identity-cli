@@ -8,8 +8,8 @@ use openidconnect::{
     AccessToken as OAuthAccessToken, AuthorizationCode, ClaimsVerificationError, ClientId,
     ConfigurationError, CsrfToken, EmptyAdditionalClaims, EndpointMaybeSet, EndpointNotSet,
     EndpointSet, HttpClientError, IssuerUrl, Nonce, OAuth2TokenResponse, PkceCodeChallenge,
-    RedirectUrl, RefreshToken as OAuthRefreshToken, RequestTokenError, StandardErrorResponse,
-    TokenResponse,
+    RedirectUrl, RefreshToken as OAuthRefreshToken, RequestTokenError, Scope,
+    StandardErrorResponse, TokenResponse,
     core::{
         CoreAuthDisplay, CoreAuthPrompt, CoreAuthenticationFlow, CoreErrorResponseType,
         CoreGenderClaim, CoreIdToken, CoreJsonWebKey, CoreJweContentEncryptionAlgorithm,
@@ -128,6 +128,7 @@ pub enum OidcClientError {
 /// OIDC Authorization Code + PKCE client for a native CLI client.
 pub struct OidcClient<C = LocalCallbackServer, B = SystemBrowser> {
     oidc_client: ConfiguredCoreClient,
+    scopes: Vec<Scope>,
     http_client: reqwest::Client,
     redirect_path: String,
     callback_server: C,
@@ -139,6 +140,7 @@ impl OidcClient<LocalCallbackServer, SystemBrowser> {
     pub async fn new(
         issuer_url: IssuerUrl,
         client_id: ClientId,
+        scopes: Vec<Scope>,
         redirect_url: RedirectUrl,
         callback_addr: SocketAddr,
         http_client: reqwest::Client,
@@ -146,6 +148,7 @@ impl OidcClient<LocalCallbackServer, SystemBrowser> {
         Self::with_components(
             issuer_url,
             client_id,
+            scopes,
             redirect_url,
             http_client,
             LocalCallbackServer::new(callback_addr),
@@ -158,6 +161,7 @@ impl OidcClient<LocalCallbackServer, SystemBrowser> {
     pub async fn from_params(
         issuer_url: IssuerUrl,
         client_id: ClientId,
+        scopes: Vec<Scope>,
         redirect_url: RedirectUrl,
         callback_addr: SocketAddr,
         http_client: reqwest::Client,
@@ -165,6 +169,7 @@ impl OidcClient<LocalCallbackServer, SystemBrowser> {
         Self::new(
             issuer_url,
             client_id,
+            scopes,
             redirect_url,
             callback_addr,
             http_client,
@@ -178,6 +183,7 @@ impl<C: CallbackServer> OidcClient<C, SystemBrowser> {
     pub async fn with_callback_server(
         issuer_url: IssuerUrl,
         client_id: ClientId,
+        scopes: Vec<Scope>,
         redirect_url: RedirectUrl,
         http_client: reqwest::Client,
         callback_server: C,
@@ -185,6 +191,7 @@ impl<C: CallbackServer> OidcClient<C, SystemBrowser> {
         Self::with_components(
             issuer_url,
             client_id,
+            scopes,
             redirect_url,
             http_client,
             callback_server,
@@ -203,6 +210,7 @@ where
     pub async fn with_components(
         issuer_url: IssuerUrl,
         client_id: ClientId,
+        scopes: Vec<Scope>,
         redirect_url: RedirectUrl,
         http_client: reqwest::Client,
         callback_server: C,
@@ -218,6 +226,7 @@ where
 
         Ok(Self {
             oidc_client,
+            scopes,
             http_client,
             redirect_path,
             callback_server,
@@ -241,6 +250,7 @@ where
                 CsrfToken::new_random,
                 Nonce::new_random,
             )
+            .add_scopes(self.scopes.iter().cloned())
             .set_pkce_challenge(pkce_challenge)
             .url();
 
@@ -322,6 +332,7 @@ mod tests {
         let client = OidcClient::with_components(
             IssuerUrl::new(issuer)?,
             ClientId::new("test-client".to_owned()),
+            vec![Scope::new("openid".to_owned())],
             redirect_url,
             http_client,
             callback_server,
