@@ -1,12 +1,13 @@
 [package]
 name = "razornd-identity-cli"
-version = "0.1.0"
+version = "0.1.0-snapshot"
 edition = "2024"
 
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 dialoguer = "0.12"
 keyring = "4.2"
 openidconnect = "4"

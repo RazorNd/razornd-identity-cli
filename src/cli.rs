@@ -1,6 +1,7 @@
 use crate::client::IdentityClient;
 use anyhow::{Context, Result, bail};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap_complete::{Shell, generate};
 use dialoguer::{Input, Password, Select};
 use razornd_identity_cli::razor_identity_client::{
     Account, CreateAccountRequest, UpdateAccountRequest,
@@ -24,6 +25,12 @@ enum Command {
     User {
         #[command(subcommand)]
         command: UserCommand,
+    },
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: Shell,
     },
 }
 
@@ -91,6 +98,15 @@ pub async fn run(client: IdentityClient) -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::User { command } => command.run(&client).await,
+        Command::Completions { shell } => {
+            generate(
+                shell,
+                &mut Cli::command(),
+                "razornd-identity-cli",
+                &mut std::io::stdout(),
+            );
+            Ok(())
+        }
     }
 }
 
