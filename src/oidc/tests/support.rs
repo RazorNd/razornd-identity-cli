@@ -5,7 +5,10 @@ use crate::oidc::{
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use openidconnect::{ClientId, IssuerUrl, RedirectUrl, Scope};
-use std::sync::{Arc, Mutex};
+use std::{
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+};
 use url::Url;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
@@ -14,6 +17,7 @@ use wiremock::{
 
 pub(crate) struct SuccessfulCallbackServer {
     state: Arc<Mutex<Option<String>>>,
+    addr: Option<SocketAddr>,
 }
 
 impl CallbackServer for SuccessfulCallbackServer {
@@ -25,16 +29,22 @@ impl CallbackServer for SuccessfulCallbackServer {
     ) -> Result<Self::Listener, CallbackListenError> {
         Ok(SuccessfulCallbackListener {
             state: self.state.clone(),
+            addr: self.addr,
         })
     }
 }
 
 pub(crate) struct SuccessfulCallbackListener {
     state: Arc<Mutex<Option<String>>>,
+    addr: Option<SocketAddr>,
 }
 
 #[async_trait]
 impl CallbackListener for SuccessfulCallbackListener {
+    fn local_addr(&self) -> Option<SocketAddr> {
+        self.addr
+    }
+
     async fn receive(self) -> Result<CallbackResponse, CallbackReceiveError> {
         let state = self
             .state
@@ -56,6 +66,7 @@ impl CallbackListener for SuccessfulCallbackListener {
 pub(crate) struct SuccessfulBrowser {
     state: Arc<Mutex<Option<String>>>,
     redirect_uri: String,
+    scopes: String,
 }
 
 impl Browser for SuccessfulBrowser {
@@ -74,6 +85,10 @@ impl Browser for SuccessfulBrowser {
             params.get("code_challenge_method").map(String::as_str),
             Some("S256")
         );
+        assert_eq!(
+            params.get("scope").map(String::as_str),
+            Some(self.scopes.as_str())
+        );
 
         *self
             .state
@@ -86,15 +101,18 @@ impl Browser for SuccessfulBrowser {
 
 pub(crate) fn successful_callback_components(
     redirect_url: &openidconnect::RedirectUrl,
+    scopes: &str,
 ) -> (SuccessfulCallbackServer, SuccessfulBrowser) {
     let state = Arc::new(Mutex::new(None));
     (
         SuccessfulCallbackServer {
             state: state.clone(),
+            addr: redirect_url.url().authority().parse().ok(),
         },
         SuccessfulBrowser {
             state,
             redirect_uri: redirect_url.url().as_str().to_owned(),
+            scopes: scopes.to_owned(),
         },
     )
 }

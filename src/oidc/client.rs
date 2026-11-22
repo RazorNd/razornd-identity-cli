@@ -18,6 +18,7 @@ use openidconnect::{
     },
 };
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::io;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -107,6 +108,8 @@ pub enum OidcClientInitError {
 pub enum OidcClientError {
     #[error("Failed to start callback listener: {0}")]
     CallbackServer(#[source] CallbackListenError),
+    #[error("Failed to set the redirect URI to the callback listener's assigned port")]
+    CallbackRedirectPort,
     #[error("Failed to open authorization URL in browser: {0}")]
     Browser(#[source] io::Error),
     #[error("Failed to receive authorization callback: {0}")]
@@ -130,7 +133,7 @@ pub struct OidcClient<C = LocalCallbackServer, B = SystemBrowser> {
     oidc_client: ConfiguredCoreClient,
     scopes: Vec<Scope>,
     http_client: reqwest::Client,
-    redirect_path: String,
+    redirect_url: RedirectUrl,
     callback_server: C,
     browser: B,
 }
@@ -220,15 +223,13 @@ where
             .await
             .map_err(|error| OidcClientInitError::Discovery(error.to_string()))?;
 
-        let redirect_path = redirect_url.url().path().to_string();
-        let oidc_client = ConfiguredCoreClient::from_provider_metadata(provider, client_id, None)
-            .set_redirect_uri(redirect_url);
+        let oidc_client = ConfiguredCoreClient::from_provider_metadata(provider, client_id, None);
 
         Ok(Self {
             oidc_client,
             scopes,
             http_client,
-            redirect_path,
+            redirect_url,
             callback_server,
             browser,
         })
@@ -242,6 +243,24 @@ where
     B: Browser,
 {
     async fn authorize(&self) -> Result<Authorization, OidcClientError> {
+        let listener = self
+            .callback_server
+            .listen(self.redirect_url.url().path())
+            .map_err(OidcClientError::CallbackServer)?;
+        let redirect_url = if self.redirect_url.url().port() == Some(0) {
+            let port = listener
+                .local_addr()
+                .map(|addr| addr.port())
+                .filter(|&port| port != 0)
+                .ok_or(OidcClientError::CallbackRedirectPort)?;
+            let mut url = self.redirect_url.url().clone();
+            url.set_port(Some(port))
+                .map_err(|()| OidcClientError::CallbackRedirectPort)?;
+            Cow::Owned(RedirectUrl::from_url(url))
+        } else {
+            Cow::Borrowed(&self.redirect_url)
+        };
+
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
         let (authorization_url, csrf_state, nonce) = self
             .oidc_client
@@ -250,14 +269,17 @@ where
                 CsrfToken::new_random,
                 Nonce::new_random,
             )
-            .add_scopes(self.scopes.iter().cloned())
+            // The OIDC library adds the openid scope automatically.
+            .add_scopes(
+                self.scopes
+                    .iter()
+                    .filter(|scope| scope.as_str() != "openid")
+                    .cloned(),
+            )
+            .set_redirect_uri(Cow::Borrowed(redirect_url.as_ref()))
             .set_pkce_challenge(pkce_challenge)
             .url();
 
-        let listener = self
-            .callback_server
-            .listen(self.redirect_path.clone())
-            .map_err(OidcClientError::CallbackServer)?;
         self.browser
             .open(&authorization_url)
             .map_err(OidcClientError::Browser)?;
@@ -280,6 +302,7 @@ where
             .oidc_client
             .exchange_code(AuthorizationCode::new(code))
             .map_err(OidcClientError::TokenExchangeConfiguration)?
+            .set_redirect_uri(redirect_url)
             .set_pkce_verifier(pkce_verifier);
 
         let OwnedCoreTokenResponse {
@@ -318,7 +341,7 @@ mod tests {
     use wiremock::MockServer;
 
     #[tokio::test]
-    async fn authorize_returns_tokens_and_lifetime_after_authorization_code_flow()
+    async fn authorize_uses_assigned_port_for_authorization_and_token_exchange()
     -> anyhow::Result<()> {
         let server = MockServer::start().await;
         let issuer = server.uri();
@@ -327,12 +350,19 @@ mod tests {
         let http_client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
-        let redirect_url = RedirectUrl::new("http://127.0.0.1:54321/callback".to_owned())?;
-        let (callback_server, browser) = successful_callback_components(&redirect_url);
+        let redirect_url = RedirectUrl::new("http://127.0.0.1:0/oauth2/callback".to_owned())?;
+        let bound_redirect_url =
+            RedirectUrl::new("http://127.0.0.1:54321/oauth2/callback".to_owned())?;
+        let scopes = "openid profile accounts:admin clients:admin";
+        let (callback_server, browser) =
+            successful_callback_components(&bound_redirect_url, scopes);
         let client = OidcClient::with_components(
             IssuerUrl::new(issuer)?,
-            ClientId::new("test-client".to_owned()),
-            vec![Scope::new("openid".to_owned())],
+            ClientId::new("razornd-identity-cli".to_owned()),
+            scopes
+                .split_whitespace()
+                .map(|scope| Scope::new(scope.to_owned()))
+                .collect(),
             redirect_url,
             http_client,
             callback_server,
@@ -341,6 +371,24 @@ mod tests {
         .await?;
 
         let authorization = client.authorize().await?;
+        let requests = server.received_requests().await.unwrap();
+        let token_request = requests
+            .iter()
+            .find(|request| request.url.path() == "/token")
+            .unwrap();
+        let params: std::collections::HashMap<_, _> =
+            url::form_urlencoded::parse(&token_request.body).collect();
+        assert_eq!(params["redirect_uri"], bound_redirect_url.url().as_str());
+        assert_eq!(params["client_id"], "razornd-identity-cli");
+        assert_eq!(params["grant_type"], "authorization_code");
+        assert!(!params["code_verifier"].is_empty());
+        assert!(!params.contains_key("client_secret"));
+        assert!(
+            !token_request
+                .headers
+                .contains_key(reqwest::header::AUTHORIZATION)
+        );
+
         assert_eq!(
             authorization.access_token().expose_secret(),
             "test-access-token"

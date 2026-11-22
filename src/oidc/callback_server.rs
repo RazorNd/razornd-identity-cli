@@ -76,6 +76,11 @@ pub enum CallbackReceiveErrorKind {
 /// Waits for a single authorization redirect.
 #[async_trait]
 pub trait CallbackListener: Send {
+    /// Returns the bound TCP address when available. Required for redirect URIs with port 0.
+    fn local_addr(&self) -> Option<SocketAddr> {
+        None
+    }
+
     async fn receive(self) -> Result<CallbackResponse, CallbackReceiveError>;
 }
 
@@ -173,6 +178,10 @@ impl CallbackServer for LocalCallbackServer {
 
 #[async_trait]
 impl CallbackListener for LocalCallbackListener {
+    fn local_addr(&self) -> Option<SocketAddr> {
+        self.server.server_addr().to_ip()
+    }
+
     async fn receive(self) -> Result<CallbackResponse, CallbackReceiveError> {
         tokio::task::spawn_blocking(move || self.receive_blocking())
             .await
@@ -246,13 +255,10 @@ mod tests {
         method: reqwest::Method,
         request_path: &str,
     ) -> (CallbackReceiveError, reqwest::StatusCode) {
-        let probe = TcpListener::bind("127.0.0.1:0").unwrap();
-        let callback_addr = probe.local_addr().unwrap();
-        drop(probe);
-
-        let listener = LocalCallbackServer::new(callback_addr)
+        let listener = LocalCallbackServer::new("127.0.0.1:0".parse().unwrap())
             .listen("/oauth2/callback")
             .unwrap();
+        let callback_addr = listener.local_addr().unwrap();
         let request_url = format!("http://{callback_addr}{request_path}");
         let request = tokio::spawn(async move {
             reqwest::Client::new()
@@ -270,12 +276,11 @@ mod tests {
 
     #[tokio::test]
     async fn local_callback_server_receives_browser_redirect() -> anyhow::Result<()> {
-        let probe = TcpListener::bind("127.0.0.1:0")?;
-        let callback_addr = probe.local_addr()?;
-        drop(probe);
-
-        let callback_server = LocalCallbackServer::new(callback_addr);
+        let callback_server = LocalCallbackServer::new("127.0.0.1:0".parse()?);
         let listener = callback_server.listen("/oauth2/callback")?;
+        let callback_addr = listener.local_addr().unwrap();
+        assert!(callback_addr.ip().is_loopback());
+        assert_ne!(callback_addr.port(), 0);
         let request = tokio::spawn(async move {
             let response = reqwest::Client::new()
                 .get(format!("http://{callback_addr}/oauth2/callback"))
@@ -313,12 +318,9 @@ mod tests {
 
     #[tokio::test]
     async fn local_callback_listener_rejects_repeated_callback_parameters() {
-        let probe = TcpListener::bind("127.0.0.1:0").unwrap();
-        let callback_addr = probe.local_addr().unwrap();
-        drop(probe);
-
-        let callback_server = LocalCallbackServer::new(callback_addr);
+        let callback_server = LocalCallbackServer::new("127.0.0.1:0".parse().unwrap());
         let listener = callback_server.listen("/oauth2/callback").unwrap();
+        let callback_addr = listener.local_addr().unwrap();
 
         let request = tokio::spawn(async move {
             reqwest::Client::new()

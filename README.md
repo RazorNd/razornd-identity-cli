@@ -13,11 +13,12 @@ The service currently exposes administrative account endpoints under `/api/admin
 
 The API is protected by the identity service's administrative authorization, so clients must be configured with appropriate access.
 
-The authorization request asks for `openid accounts:admin` by default. Configure the requested scopes as a whitespace-separated list with `RAZORND_IDENTITY_SCOPES`, in the same way as `RAZORND_IDENTITY_CLIENT_ID`. These `RAZORND_IDENTITY_*` settings are read at compile time:
+By default, the CLI uses the public OAuth client `razornd-identity-cli` with Authorization Code and PKCE (S256), without a client secret. It requests `openid profile accounts:admin clients:admin`. The registered callback is `http://127.0.0.1:0/oauth2/callback`; the CLI binds a free loopback port and sends the actual callback URI to the server. The server controls consent and the access token lifetime (six hours in the default server registration).
+
+Override the issuer, client ID, callback URI, or whitespace-separated scopes at compile time with `RAZORND_IDENTITY_ISSUER_URI`, `RAZORND_IDENTITY_CLIENT_ID`, `RAZORND_IDENTITY_REDIRECT_URI`, or `RAZORND_IDENTITY_SCOPES`. The `openid` scope is always included.
 
 ```bash
-RAZORND_IDENTITY_SCOPES="openid accounts:admin" \
-RAZORND_IDENTITY_CLIENT_ID="http-client" \
+RAZORND_IDENTITY_SCOPES="openid profile accounts:admin" \
 cargo run -- user get some-user
 ```
 

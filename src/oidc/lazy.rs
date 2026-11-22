@@ -165,7 +165,7 @@ mod tests {
         mount_oidc_provider(&server, 1, 2).await;
 
         let redirect_url = RedirectUrl::new("http://127.0.0.1:54321/callback".to_owned())?;
-        let (callback_server, browser) = successful_callback_components(&redirect_url);
+        let (callback_server, browser) = successful_callback_components(&redirect_url, "openid");
         let client = LazyOidcClient::with_components(
             IssuerUrl::new(issuer)?,
             ClientId::new("test-client".to_owned()),
