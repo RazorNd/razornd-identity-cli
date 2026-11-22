@@ -22,6 +22,11 @@ RAZORND_IDENTITY_SCOPES="openid profile accounts:admin" \
 cargo run -- user get some-user
 ```
 
+To sign out of the CLI, run `razornd-identity-cli auth logout` (or `cargo run -- auth logout`).
+This removes the local token for the current issuer, client ID, and scope configuration.
+It works offline and succeeds even if no token is stored. It does not revoke the token
+on the server or sign out of the browser. The next `user` command starts authorization again.
+
 Create an account interactively, or provide the positional username. When prompted, an empty password asks the service to generate one:
 
 ```bash

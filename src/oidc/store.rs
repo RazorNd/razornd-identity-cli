@@ -34,6 +34,9 @@ pub trait AuthorizationStorage: Send + Sync {
 
     async fn load(&self) -> Result<Option<StoredAuthorization>, Self::Error>;
     async fn save(&self, authorization: StoredAuthorization) -> Result<(), Self::Error>;
+
+    /// Removes the stored authorization. Succeeds if no authorization is stored.
+    async fn clear(&self) -> Result<(), Self::Error>;
 }
 
 /// In-memory implementation of [`AuthorizationStorage`].
@@ -52,6 +55,11 @@ impl AuthorizationStorage for InMemoryAuthorizationStorage {
 
     async fn save(&self, authorization: StoredAuthorization) -> Result<(), Self::Error> {
         *self.authorization.lock().await = Some(authorization);
+        Ok(())
+    }
+
+    async fn clear(&self) -> Result<(), Self::Error> {
+        *self.authorization.lock().await = None;
         Ok(())
     }
 }

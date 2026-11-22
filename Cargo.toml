@@ -22,4 +22,5 @@ webbrowser = "1"
 
 [dev-dependencies]
 base64 = "0.22"
+keyring-core = "1"
 wiremock = "0.6"

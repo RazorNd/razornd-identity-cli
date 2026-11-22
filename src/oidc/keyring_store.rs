@@ -20,6 +20,13 @@ impl KeyringAuthorizationStorage {
         }
     }
 
+    fn clear_entry(entry: &keyring::Entry) -> Result<(), KeyringAuthorizationStorageError> {
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     fn entry(&self) -> Result<keyring::Entry, KeyringAuthorizationStorageError> {
         Ok(keyring::Entry::new(&self.service, &self.username)?)
     }
@@ -104,11 +111,49 @@ impl AuthorizationStorage for KeyringAuthorizationStorage {
         entry.set_password(&serde_json::to_string(&persisted)?)?;
         Ok(())
     }
+
+    async fn clear(&self) -> Result<(), Self::Error> {
+        Self::clear_entry(&self.entry()?)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use keyring_core::{api::CredentialStoreApi, mock};
+
+    fn mock_entry() -> keyring::Entry {
+        keyring::Entry {
+            inner: mock::Store::new()
+                .unwrap()
+                .build("test-service", "test-account", None)
+                .unwrap(),
+        }
+    }
+
+    #[test]
+    fn clear_deletes_the_entry_and_succeeds_when_called_again() {
+        let entry = mock_entry();
+        entry.set_password("not valid authorization JSON").unwrap();
+
+        KeyringAuthorizationStorage::clear_entry(&entry).unwrap();
+        assert!(matches!(entry.get_password(), Err(keyring::Error::NoEntry)));
+        KeyringAuthorizationStorage::clear_entry(&entry).unwrap();
+    }
+
+    #[test]
+    fn clear_propagates_keyring_errors() {
+        let entry = mock_entry();
+        let credential = entry.inner.as_any().downcast_ref::<mock::Cred>().unwrap();
+        credential.set_error(keyring::Error::NoDefaultStore);
+
+        assert!(matches!(
+            KeyringAuthorizationStorage::clear_entry(&entry),
+            Err(KeyringAuthorizationStorageError::Keyring(
+                keyring::Error::NoDefaultStore
+            ))
+        ));
+    }
 
     #[test]
     fn persisted_authorization_round_trips_token_and_expiration() {

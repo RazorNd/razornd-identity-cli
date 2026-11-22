@@ -8,11 +8,11 @@ use tokio::sync::Mutex;
 /// Refreshes expired authorizations and stores successful results.
 ///
 /// The mutex makes concurrent requests through the same provider share a
-/// single re-authorization.
+/// single re-authorization and prevents clearing storage during that operation.
 pub struct StoredTokenProvider<S, A, E> {
     storage: S,
     authorizer: A,
-    refresh_lock: Mutex<()>,
+    authorization_lock: Mutex<()>,
     error: PhantomData<fn() -> E>,
 }
 
@@ -21,9 +21,17 @@ impl<S, A, E> StoredTokenProvider<S, A, E> {
         Self {
             storage,
             authorizer,
-            refresh_lock: Mutex::new(()),
+            authorization_lock: Mutex::new(()),
             error: PhantomData,
         }
+    }
+}
+
+impl<S: AuthorizationStorage, A, E> StoredTokenProvider<S, A, E> {
+    /// Removes the local authorization without contacting the provider.
+    pub async fn clear_authorization(&self) -> Result<(), S::Error> {
+        let _guard = self.authorization_lock.lock().await;
+        self.storage.clear().await
     }
 }
 
@@ -43,7 +51,7 @@ where
     E: Error + Send + Sync + 'static,
 {
     async fn access_token(&self) -> Result<AccessToken, StoredTokenProviderError<E, S::Error>> {
-        let _refresh_guard = self.refresh_lock.lock().await;
+        let _guard = self.authorization_lock.lock().await;
 
         if let Some(stored) = self
             .storage
@@ -117,6 +125,31 @@ mod tests {
             let token = provider.access_token().await.unwrap();
             assert_eq!(token.expose_secret(), "access-token-0");
         }
+    }
+
+    #[tokio::test]
+    async fn clear_authorization_removes_cached_token_without_reauthorizing() {
+        let storage = InMemoryAuthorizationStorage::default();
+        let provider = StoredTokenProvider::new(
+            storage.clone(),
+            CountingAuthorizer {
+                calls: AtomicUsize::new(0),
+                expires_in: Some(Duration::from_secs(3600)),
+            },
+        );
+        assert_eq!(
+            provider.access_token().await.unwrap().expose_secret(),
+            "access-token-0"
+        );
+
+        provider.clear_authorization().await.unwrap();
+        provider.clear_authorization().await.unwrap();
+        assert!(storage.load().await.unwrap().is_none());
+        assert_eq!(provider.authorizer.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            provider.access_token().await.unwrap().expose_secret(),
+            "access-token-1"
+        );
     }
 
     #[tokio::test]

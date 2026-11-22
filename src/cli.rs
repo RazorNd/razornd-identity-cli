@@ -1,4 +1,5 @@
-use crate::client::IdentityClient;
+use crate::client::IdentityTokenProvider;
+use crate::{app::IdentityApp, client::IdentityClient};
 use anyhow::{Context, Result, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::{Shell, generate};
@@ -21,6 +22,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Manage the CLI session
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommand,
+    },
     /// Manage user accounts
     User {
         #[command(subcommand)]
@@ -32,6 +38,14 @@ enum Command {
         #[arg(value_enum)]
         shell: Shell,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum AuthCommand {
+    /// Remove the local CLI session
+    ///
+    /// Does not revoke the token or sign out of the browser.
+    Logout,
 }
 
 #[derive(Debug, Subcommand)]
@@ -94,10 +108,11 @@ struct UpdateUserArgs {
     disabled: bool,
 }
 
-pub async fn run(client: IdentityClient) -> Result<()> {
+pub(crate) async fn run(app: IdentityApp) -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::User { command } => command.run(&client).await,
+        Command::Auth { command } => command.run(app.token_provider()?).await,
+        Command::User { command } => command.run(&app.client()?).await,
         Command::Completions { shell } => {
             generate(
                 shell,
@@ -106,6 +121,21 @@ pub async fn run(client: IdentityClient) -> Result<()> {
                 &mut std::io::stdout(),
             );
             Ok(())
+        }
+    }
+}
+
+impl AuthCommand {
+    async fn run(self, token_provider: IdentityTokenProvider) -> Result<()> {
+        match self {
+            AuthCommand::Logout => {
+                token_provider
+                    .clear_authorization()
+                    .await
+                    .context("failed to clear the local CLI session")?;
+                println!("Logged out of the CLI. Your browser session is unchanged.");
+                Ok(())
+            }
         }
     }
 }
