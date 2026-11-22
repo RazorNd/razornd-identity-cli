@@ -41,6 +41,42 @@ pub enum StoredTokenProviderError<AuthorizationError, StorageError> {
     Authorization(#[source] AuthorizationError),
     #[error("authorization storage failed: {0}")]
     Storage(#[source] StorageError),
+    #[error("cannot save authorization: the access token has no usable expiration time")]
+    InvalidExpiration,
+}
+
+impl<S, A, E> StoredTokenProvider<S, A, E>
+where
+    S: AuthorizationStorage,
+    A: AuthorizationProvider<E>,
+    E: Error + Send + Sync + 'static,
+{
+    /// Runs a fresh authorization and replaces the cached token after success.
+    pub async fn reauthorize(&self) -> Result<(), StoredTokenProviderError<E, S::Error>> {
+        let _guard = self.authorization_lock.lock().await;
+        let authorization = self.authorize().await?;
+        let stored = stored_authorization(&authorization)
+            .filter(|stored| !stored.is_expired())
+            .ok_or(StoredTokenProviderError::InvalidExpiration)?;
+        self.save_authorization(stored).await
+    }
+
+    async fn authorize(&self) -> Result<Authorization, StoredTokenProviderError<E, S::Error>> {
+        self.authorizer
+            .authorize()
+            .await
+            .map_err(StoredTokenProviderError::Authorization)
+    }
+
+    async fn save_authorization(
+        &self,
+        authorization: StoredAuthorization,
+    ) -> Result<(), StoredTokenProviderError<E, S::Error>> {
+        self.storage
+            .save(authorization)
+            .await
+            .map_err(StoredTokenProviderError::Storage)
+    }
 }
 
 #[async_trait]
@@ -63,27 +99,23 @@ where
             return Ok(stored.into_access_token());
         }
 
-        let authorization = self
-            .authorizer
-            .authorize()
-            .await
-            .map_err(StoredTokenProviderError::Authorization)?;
-        let access_token = authorization.access_token().clone();
-        if let Some(stored) = stored_authorization(authorization) {
-            self.storage
-                .save(stored)
-                .await
-                .map_err(StoredTokenProviderError::Storage)?;
+        let authorization = self.authorize().await?;
+        if let Some(stored) = stored_authorization(&authorization) {
+            self.save_authorization(stored).await?;
         }
+
+        let (access_token, _, _) = authorization.into_parts();
 
         Ok(access_token)
     }
 }
 
-fn stored_authorization(authorization: Authorization) -> Option<StoredAuthorization> {
-    let (access_token, _refresh_token, expires_in) = authorization.into_parts();
-    let expires_at = SystemTime::now().checked_add(expires_in?)?;
-    Some(StoredAuthorization::new(access_token, expires_at))
+fn stored_authorization(authorization: &Authorization) -> Option<StoredAuthorization> {
+    let expires_at = SystemTime::now().checked_add(authorization.expires_in()?)?;
+    Some(StoredAuthorization::new(
+        authorization.access_token().clone(),
+        expires_at,
+    ))
 }
 
 #[cfg(test)]
@@ -98,6 +130,15 @@ mod tests {
     struct CountingAuthorizer {
         calls: AtomicUsize,
         expires_in: Option<Duration>,
+    }
+
+    struct RejectingAuthorizer;
+
+    #[async_trait]
+    impl AuthorizationProvider<std::io::Error> for RejectingAuthorizer {
+        async fn authorize(&self) -> Result<Authorization, std::io::Error> {
+            Err(std::io::Error::other("authorization declined"))
+        }
     }
 
     #[async_trait]
@@ -152,6 +193,74 @@ mod tests {
         );
     }
 
+    async fn storage_with_cached_authorization() -> InMemoryAuthorizationStorage {
+        let storage = InMemoryAuthorizationStorage::default();
+        storage
+            .save(StoredAuthorization::new(
+                AccessToken::new("cached-token".to_owned()),
+                SystemTime::now() + Duration::from_secs(3600),
+            ))
+            .await
+            .unwrap();
+        storage
+    }
+
+    #[tokio::test]
+    async fn reauthorize_replaces_an_unexpired_cached_token() {
+        let provider = StoredTokenProvider::new(
+            storage_with_cached_authorization().await,
+            CountingAuthorizer {
+                calls: AtomicUsize::new(0),
+                expires_in: Some(Duration::from_secs(3600)),
+            },
+        );
+
+        provider.reauthorize().await.unwrap();
+        assert_eq!(
+            provider.access_token().await.unwrap().expose_secret(),
+            "access-token-0"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_reauthorization_leaves_the_cached_token_unchanged() {
+        let provider = StoredTokenProvider::new(
+            storage_with_cached_authorization().await,
+            RejectingAuthorizer,
+        );
+
+        assert!(matches!(
+            provider.reauthorize().await,
+            Err(StoredTokenProviderError::Authorization(_))
+        ));
+        assert_eq!(
+            provider.access_token().await.unwrap().expose_secret(),
+            "cached-token"
+        );
+    }
+
+    #[tokio::test]
+    async fn reauthorize_rejects_unusable_expiration_without_replacing_cached_token() {
+        for expires_in in [None, Some(Duration::ZERO), Some(Duration::MAX)] {
+            let provider = StoredTokenProvider::new(
+                storage_with_cached_authorization().await,
+                CountingAuthorizer {
+                    calls: AtomicUsize::new(0),
+                    expires_in,
+                },
+            );
+
+            assert!(matches!(
+                provider.reauthorize().await,
+                Err(StoredTokenProviderError::InvalidExpiration)
+            ));
+            assert_eq!(
+                provider.access_token().await.unwrap().expose_secret(),
+                "cached-token"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn authorizes_again_when_stored_token_has_expired() {
         let authorizer = CountingAuthorizer {
@@ -169,7 +278,7 @@ mod tests {
 
     #[tokio::test]
     async fn stored_authorization_maps_lifetime_to_absolute_expiration() {
-        let stored = stored_authorization(Authorization::new(
+        let stored = stored_authorization(&Authorization::new(
             AccessToken::new("access-token".to_owned()),
             None,
             Some(Duration::from_secs(60)),

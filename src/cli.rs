@@ -42,6 +42,8 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum AuthCommand {
+    /// Authorize the CLI in your browser and replace the saved session
+    Login,
     /// Remove the local CLI session
     ///
     /// Does not revoke the token or sign out of the browser.
@@ -128,6 +130,14 @@ pub(crate) async fn run(app: IdentityApp) -> Result<()> {
 impl AuthCommand {
     async fn run(self, token_provider: IdentityTokenProvider) -> Result<()> {
         match self {
+            AuthCommand::Login => {
+                token_provider
+                    .reauthorize()
+                    .await
+                    .context("failed to log in to the CLI")?;
+                println!("Logged in to the CLI.");
+                Ok(())
+            }
             AuthCommand::Logout => {
                 token_provider
                     .clear_authorization()

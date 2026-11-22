@@ -22,6 +22,11 @@ RAZORND_IDENTITY_SCOPES="openid profile accounts:admin" \
 cargo run -- user get some-user
 ```
 
+To sign in explicitly, run `razornd-identity-cli auth login` (or `cargo run -- auth login`).
+This starts browser authorization even if a token is already saved, and replaces the local
+session only after a new token is saved. You can also skip this step:
+`user` commands start authorization automatically if there is no usable cached token.
+
 To sign out of the CLI, run `razornd-identity-cli auth logout` (or `cargo run -- auth logout`).
 This removes the local token for the current issuer, client ID, and scope configuration.
 It works offline and succeeds even if no token is stored. It does not revoke the token
