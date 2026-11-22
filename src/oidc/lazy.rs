@@ -94,12 +94,14 @@ impl<C: CallbackServer, B: Browser> LazyOidcClient<C, B> {
 }
 
 #[async_trait]
-impl<C, B> AuthorizationProvider<LazyOidcClientError> for LazyOidcClient<C, B>
+impl<C, B> AuthorizationProvider for LazyOidcClient<C, B>
 where
     C: CallbackServer,
     B: Browser,
 {
-    async fn authorize(&self) -> Result<Authorization, LazyOidcClientError> {
+    type Error = LazyOidcClientError;
+
+    async fn authorize(&self) -> Result<Authorization, Self::Error> {
         let client = self
             .client
             .get_or_try_init(|| async {

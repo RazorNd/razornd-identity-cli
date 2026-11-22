@@ -84,24 +84,18 @@ where
 }
 
 /// Client for razornd-identity's administrative account API.
-pub struct RazorIdentityClient<P, E> {
+pub struct RazorIdentityClient<P> {
     base_url: Url,
     token_provider: P,
     http_client: reqwest::Client,
-    _token_error: std::marker::PhantomData<fn() -> E>,
 }
 
-impl<P, E> RazorIdentityClient<P, E>
-where
-    P: TokenProvider<E>,
-    E: Error + Send + Sync + 'static,
-{
+impl<P: TokenProvider> RazorIdentityClient<P> {
     pub fn new(base_url: Url, token_provider: P, http_client: reqwest::Client) -> Self {
         Self {
             base_url,
             token_provider,
             http_client,
-            _token_error: std::marker::PhantomData,
         }
     }
 
@@ -110,7 +104,7 @@ where
     pub async fn create_account(
         &self,
         request: &CreateAccountRequest,
-    ) -> Result<CreatedAccount, RazorIdentityClientError<E>> {
+    ) -> Result<CreatedAccount, RazorIdentityClientError<P::Error>> {
         let response = self
             .authorized_request(Method::POST, self.accounts_url()?)
             .await?
@@ -129,7 +123,7 @@ where
     pub async fn get_account(
         &self,
         username: &str,
-    ) -> Result<Option<Account>, RazorIdentityClientError<E>> {
+    ) -> Result<Option<Account>, RazorIdentityClientError<P::Error>> {
         let response = self
             .authorized_request(Method::GET, self.account_url(username)?)
             .await?
@@ -147,7 +141,7 @@ where
         &self,
         username: &str,
         request: &UpdateAccountRequest,
-    ) -> Result<Option<Account>, RazorIdentityClientError<E>> {
+    ) -> Result<Option<Account>, RazorIdentityClientError<P::Error>> {
         let response = self
             .authorized_request(Method::PATCH, self.account_url(username)?)
             .await?
@@ -165,7 +159,7 @@ where
     pub async fn disable_account(
         &self,
         username: &str,
-    ) -> Result<bool, RazorIdentityClientError<E>> {
+    ) -> Result<bool, RazorIdentityClientError<P::Error>> {
         let response = self
             .authorized_request(Method::DELETE, self.account_url(username)?)
             .await?
@@ -182,7 +176,7 @@ where
         &self,
         method: Method,
         url: Url,
-    ) -> Result<reqwest::RequestBuilder, RazorIdentityClientError<E>> {
+    ) -> Result<reqwest::RequestBuilder, RazorIdentityClientError<P::Error>> {
         let token = self.access_token().await?;
         Ok(self
             .http_client
@@ -194,7 +188,7 @@ where
         &self,
         response: reqwest::Response,
         expected: StatusCode,
-    ) -> Result<reqwest::Response, RazorIdentityClientError<E>> {
+    ) -> Result<reqwest::Response, RazorIdentityClientError<P::Error>> {
         if response.status() == expected {
             return Ok(response);
         }
@@ -203,11 +197,11 @@ where
         Err(RazorIdentityClientError::UnexpectedStatus { status, body })
     }
 
-    fn accounts_url(&self) -> Result<Url, RazorIdentityClientError<E>> {
+    fn accounts_url(&self) -> Result<Url, RazorIdentityClientError<P::Error>> {
         Ok(self.base_url.join("api/admin/accounts")?)
     }
 
-    fn account_url(&self, username: &str) -> Result<Url, RazorIdentityClientError<E>> {
+    fn account_url(&self, username: &str) -> Result<Url, RazorIdentityClientError<P::Error>> {
         let mut url = self.accounts_url()?;
         url.path_segments_mut()
             .expect("HTTP(S) service URLs support path segments")
@@ -229,13 +223,15 @@ mod tests {
     struct TestTokenProvider;
 
     #[async_trait]
-    impl TokenProvider<Infallible> for TestTokenProvider {
-        async fn access_token(&self) -> Result<AccessToken, Infallible> {
+    impl TokenProvider for TestTokenProvider {
+        type Error = Infallible;
+
+        async fn access_token(&self) -> Result<AccessToken, Self::Error> {
             Ok(AccessToken::new("test-token".to_owned()))
         }
     }
 
-    fn client(server: &MockServer) -> RazorIdentityClient<TestTokenProvider, Infallible> {
+    fn client(server: &MockServer) -> RazorIdentityClient<TestTokenProvider> {
         RazorIdentityClient::new(
             Url::parse(&server.uri()).unwrap(),
             TestTokenProvider,
@@ -361,12 +357,8 @@ mod tests {
     }
 }
 
-impl<P, E> RazorIdentityClient<P, E>
-where
-    P: TokenProvider<E>,
-    E: Error + Send + Sync + 'static,
-{
-    async fn access_token(&self) -> Result<AccessToken, RazorIdentityClientError<E>> {
+impl<P: TokenProvider> RazorIdentityClient<P> {
+    async fn access_token(&self) -> Result<AccessToken, RazorIdentityClientError<P::Error>> {
         self.token_provider
             .access_token()
             .await

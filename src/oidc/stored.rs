@@ -1,7 +1,7 @@
 use super::{AuthorizationStorage, StoredAuthorization};
 use crate::oidc::{AccessToken, Authorization, AuthorizationProvider, TokenProvider};
 use async_trait::async_trait;
-use std::{error::Error, marker::PhantomData, time::SystemTime};
+use std::time::SystemTime;
 use thiserror::Error as ThisError;
 use tokio::sync::Mutex;
 
@@ -9,25 +9,23 @@ use tokio::sync::Mutex;
 ///
 /// The mutex makes concurrent requests through the same provider share a
 /// single re-authorization and prevents clearing storage during that operation.
-pub struct StoredTokenProvider<S, A, E> {
+pub struct StoredTokenProvider<S, A> {
     storage: S,
     authorizer: A,
     authorization_lock: Mutex<()>,
-    error: PhantomData<fn() -> E>,
 }
 
-impl<S, A, E> StoredTokenProvider<S, A, E> {
+impl<S, A> StoredTokenProvider<S, A> {
     pub fn new(storage: S, authorizer: A) -> Self {
         Self {
             storage,
             authorizer,
             authorization_lock: Mutex::new(()),
-            error: PhantomData,
         }
     }
 }
 
-impl<S: AuthorizationStorage, A, E> StoredTokenProvider<S, A, E> {
+impl<S: AuthorizationStorage, A> StoredTokenProvider<S, A> {
     /// Removes the local authorization without contacting the provider.
     pub async fn clear_authorization(&self) -> Result<(), S::Error> {
         let _guard = self.authorization_lock.lock().await;
@@ -45,14 +43,13 @@ pub enum StoredTokenProviderError<AuthorizationError, StorageError> {
     InvalidExpiration,
 }
 
-impl<S, A, E> StoredTokenProvider<S, A, E>
+impl<S, A> StoredTokenProvider<S, A>
 where
     S: AuthorizationStorage,
-    A: AuthorizationProvider<E>,
-    E: Error + Send + Sync + 'static,
+    A: AuthorizationProvider,
 {
     /// Runs a fresh authorization and replaces the cached token after success.
-    pub async fn reauthorize(&self) -> Result<(), StoredTokenProviderError<E, S::Error>> {
+    pub async fn reauthorize(&self) -> Result<(), StoredTokenProviderError<A::Error, S::Error>> {
         let _guard = self.authorization_lock.lock().await;
         let authorization = self.authorize().await?;
         let stored = stored_authorization(&authorization)
@@ -61,7 +58,9 @@ where
         self.save_authorization(stored).await
     }
 
-    async fn authorize(&self) -> Result<Authorization, StoredTokenProviderError<E, S::Error>> {
+    async fn authorize(
+        &self,
+    ) -> Result<Authorization, StoredTokenProviderError<A::Error, S::Error>> {
         self.authorizer
             .authorize()
             .await
@@ -71,7 +70,7 @@ where
     async fn save_authorization(
         &self,
         authorization: StoredAuthorization,
-    ) -> Result<(), StoredTokenProviderError<E, S::Error>> {
+    ) -> Result<(), StoredTokenProviderError<A::Error, S::Error>> {
         self.storage
             .save(authorization)
             .await
@@ -80,13 +79,14 @@ where
 }
 
 #[async_trait]
-impl<S, A, E> TokenProvider<StoredTokenProviderError<E, S::Error>> for StoredTokenProvider<S, A, E>
+impl<S, A> TokenProvider for StoredTokenProvider<S, A>
 where
     S: AuthorizationStorage,
-    A: AuthorizationProvider<E>,
-    E: Error + Send + Sync + 'static,
+    A: AuthorizationProvider,
 {
-    async fn access_token(&self) -> Result<AccessToken, StoredTokenProviderError<E, S::Error>> {
+    type Error = StoredTokenProviderError<A::Error, S::Error>;
+
+    async fn access_token(&self) -> Result<AccessToken, Self::Error> {
         let _guard = self.authorization_lock.lock().await;
 
         if let Some(stored) = self
@@ -135,15 +135,19 @@ mod tests {
     struct RejectingAuthorizer;
 
     #[async_trait]
-    impl AuthorizationProvider<std::io::Error> for RejectingAuthorizer {
-        async fn authorize(&self) -> Result<Authorization, std::io::Error> {
+    impl AuthorizationProvider for RejectingAuthorizer {
+        type Error = std::io::Error;
+
+        async fn authorize(&self) -> Result<Authorization, Self::Error> {
             Err(std::io::Error::other("authorization declined"))
         }
     }
 
     #[async_trait]
-    impl AuthorizationProvider<std::convert::Infallible> for CountingAuthorizer {
-        async fn authorize(&self) -> Result<Authorization, std::convert::Infallible> {
+    impl AuthorizationProvider for CountingAuthorizer {
+        type Error = std::convert::Infallible;
+
+        async fn authorize(&self) -> Result<Authorization, Self::Error> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(Authorization::new(
                 AccessToken::new(format!("access-token-{call}")),

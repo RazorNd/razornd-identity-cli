@@ -15,7 +15,7 @@
  */
 
 use async_trait::async_trait;
-use std::time::Duration;
+use std::{error::Error, time::Duration};
 
 /// Access token returned by a [`TokenProvider`].
 ///
@@ -113,29 +113,25 @@ impl Authorization {
 
 /// Performs an authorization flow and returns all token data needed for storage.
 #[async_trait]
-pub trait AuthorizationProvider<E>: Send + Sync
-where
-    E: Send,
-{
-    async fn authorize(&self) -> Result<Authorization, E>;
+pub trait AuthorizationProvider: Send + Sync {
+    type Error: Error + Send + Sync + 'static;
+
+    async fn authorize(&self) -> Result<Authorization, Self::Error>;
 }
 
 /// Provides an access token suitable for calling the identity service.
 #[async_trait]
-pub trait TokenProvider<E>: Send + Sync
-where
-    E: Send,
-{
-    async fn access_token(&self) -> Result<AccessToken, E>;
+pub trait TokenProvider: Send + Sync {
+    type Error: Error + Send + Sync + 'static;
+
+    async fn access_token(&self) -> Result<AccessToken, Self::Error>;
 }
 
 #[async_trait]
-impl<E, A> TokenProvider<E> for A
-where
-    E: Send,
-    A: AuthorizationProvider<E>,
-{
-    async fn access_token(&self) -> Result<AccessToken, E> {
+impl<A: AuthorizationProvider> TokenProvider for A {
+    type Error = A::Error;
+
+    async fn access_token(&self) -> Result<AccessToken, Self::Error> {
         self.authorize()
             .await
             .map(|authorization| authorization.access_token)

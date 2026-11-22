@@ -15,14 +15,9 @@
  */
 use razornd_identity_cli::RazorIdentityClient;
 use razornd_identity_cli::oidc::{
-    KeyringAuthorizationStorage, KeyringAuthorizationStorageError, LazyOidcClient,
-    LazyOidcClientError, StoredTokenProvider, StoredTokenProviderError,
+    KeyringAuthorizationStorage, LazyOidcClient, StoredTokenProvider,
 };
 
-pub type IdentityTokenProvider =
-    StoredTokenProvider<KeyringAuthorizationStorage, LazyOidcClient, LazyOidcClientError>;
+pub type IdentityTokenProvider = StoredTokenProvider<KeyringAuthorizationStorage, LazyOidcClient>;
 
-pub type IdentityClient = RazorIdentityClient<
-    IdentityTokenProvider,
-    StoredTokenProviderError<LazyOidcClientError, KeyringAuthorizationStorageError>,
->;
+pub type IdentityClient = RazorIdentityClient<IdentityTokenProvider>;

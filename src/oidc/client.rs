@@ -237,12 +237,14 @@ where
 }
 
 #[async_trait]
-impl<C, B> AuthorizationProvider<OidcClientError> for OidcClient<C, B>
+impl<C, B> AuthorizationProvider for OidcClient<C, B>
 where
     C: CallbackServer,
     B: Browser,
 {
-    async fn authorize(&self) -> Result<Authorization, OidcClientError> {
+    type Error = OidcClientError;
+
+    async fn authorize(&self) -> Result<Authorization, Self::Error> {
         let listener = self
             .callback_server
             .listen(self.redirect_url.url().path())
