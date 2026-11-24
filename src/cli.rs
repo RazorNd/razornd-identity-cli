@@ -9,6 +9,9 @@ use razornd_identity_cli::razor_identity_client::{
 };
 use std::io::{IsTerminal, Read};
 
+mod clients;
+use clients::ClientCommand;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "razornd-identity",
@@ -31,6 +34,11 @@ enum Command {
     User {
         #[command(subcommand)]
         command: UserCommand,
+    },
+    /// Manage OAuth2 clients
+    Client {
+        #[command(subcommand)]
+        command: Box<ClientCommand>,
     },
     /// Generate shell completions
     Completions {
@@ -115,6 +123,7 @@ pub(crate) async fn run(app: IdentityApp) -> Result<()> {
     match cli.command {
         Command::Auth { command } => command.run(app.token_provider()?).await,
         Command::User { command } => command.run(&app.client()?).await,
+        Command::Client { command } => command.run(&app.client()?, app.scope_provider()).await,
         Command::Completions { shell } => {
             generate(
                 shell,

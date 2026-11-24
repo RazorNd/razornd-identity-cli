@@ -262,20 +262,34 @@ pub(crate) async fn mount_oidc_provider(
     expected_discoveries: u64,
     expected_token_requests: u64,
 ) {
+    mount_oidc_provider_with_scopes(server, expected_discoveries, expected_token_requests, None)
+        .await;
+}
+
+pub(crate) async fn mount_oidc_provider_with_scopes(
+    server: &MockServer,
+    expected_discoveries: u64,
+    expected_token_requests: u64,
+    scopes_supported: Option<&[&str]>,
+) {
     let issuer = server.uri();
+    let mut metadata = serde_json::json!({
+        "issuer": issuer,
+        "authorization_endpoint": format!("{issuer}/authorize"),
+        "token_endpoint": format!("{issuer}/token"),
+        "jwks_uri": format!("{issuer}/jwks"),
+        "response_types_supported": ["code"],
+        "subject_types_supported": ["public"],
+        "id_token_signing_alg_values_supported": ["RS256"],
+        "grant_types_supported": ["authorization_code"],
+        "token_endpoint_auth_methods_supported": ["none"]
+    });
+    if let Some(scopes) = scopes_supported {
+        metadata["scopes_supported"] = serde_json::json!(scopes);
+    }
     Mock::given(method("GET"))
         .and(path("/.well-known/openid-configuration"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "issuer": issuer,
-            "authorization_endpoint": format!("{issuer}/authorize"),
-            "token_endpoint": format!("{issuer}/token"),
-            "jwks_uri": format!("{issuer}/jwks"),
-            "response_types_supported": ["code"],
-            "subject_types_supported": ["public"],
-            "id_token_signing_alg_values_supported": ["RS256"],
-            "grant_types_supported": ["authorization_code"],
-            "token_endpoint_auth_methods_supported": ["none"]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(metadata))
         .expect(expected_discoveries)
         .mount(server)
         .await;

@@ -3,6 +3,7 @@ mod callback_server;
 mod client;
 mod keyring_store;
 mod lazy;
+mod scope_provider;
 mod store;
 mod stored;
 #[cfg(test)]
@@ -17,6 +18,7 @@ pub use callback_server::{
 pub use client::{OidcClient, OidcClientError, OidcClientInitError};
 pub use keyring_store::{KeyringAuthorizationStorage, KeyringAuthorizationStorageError};
 pub use lazy::{LazyOidcClient, LazyOidcClientError, LazyOidcClientInitError};
+pub use scope_provider::SupportedScopesProvider;
 pub use store::{AuthorizationStorage, InMemoryAuthorizationStorage, StoredAuthorization};
 pub use stored::{StoredTokenProvider, StoredTokenProviderError};
 pub use token_provider::{

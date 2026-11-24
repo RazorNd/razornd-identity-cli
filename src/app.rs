@@ -2,7 +2,7 @@ use crate::client::{IdentityClient, IdentityTokenProvider};
 use openidconnect::{ClientId, IssuerUrl, RedirectUrl, Scope};
 use razornd_identity_cli::RazorIdentityClient;
 use razornd_identity_cli::oidc::{
-    KeyringAuthorizationStorage, LazyOidcClient, StoredTokenProvider,
+    KeyringAuthorizationStorage, LazyOidcClient, StoredTokenProvider, SupportedScopesProvider,
 };
 use url::Url;
 
@@ -13,30 +13,54 @@ const DEFAULT_SCOPES: &str = "openid profile accounts:admin clients:admin";
 
 pub(crate) struct IdentityApp {
     issuer_uri: &'static str,
-    redirect_uri: &'static str,
     client_id: &'static str,
     scopes: Vec<&'static str>,
     http_client: reqwest::Client,
+    authorizer: LazyOidcClient,
 }
 
 impl IdentityApp {
     pub(crate) fn configured() -> anyhow::Result<Self> {
-        Ok(Self {
-            issuer_uri: option_env!("RAZORND_IDENTITY_ISSUER_URI").unwrap_or(ISSUER_URI),
-            redirect_uri: option_env!("RAZORND_IDENTITY_REDIRECT_URI").unwrap_or(REDIRECT_URI),
-            client_id: option_env!("RAZORND_IDENTITY_CLIENT_ID").unwrap_or(DEFAULT_CLIENT_ID),
-            scopes: option_env!("RAZORND_IDENTITY_SCOPES")
-                .unwrap_or(DEFAULT_SCOPES)
-                .split_whitespace()
+        let issuer_uri = option_env!("RAZORND_IDENTITY_ISSUER_URI").unwrap_or(ISSUER_URI);
+        let redirect_url = option_env!("RAZORND_IDENTITY_REDIRECT_URI")
+            .unwrap_or(REDIRECT_URI)
+            .parse::<Url>()?;
+        let callback_addr = redirect_url.authority().parse()?;
+        let client_id = option_env!("RAZORND_IDENTITY_CLIENT_ID").unwrap_or(DEFAULT_CLIENT_ID);
+        let scopes: Vec<_> = option_env!("RAZORND_IDENTITY_SCOPES")
+            .unwrap_or(DEFAULT_SCOPES)
+            .split_whitespace()
+            .collect();
+        let http_client = Self::http_client()?;
+        let authorizer = LazyOidcClient::new(
+            IssuerUrl::new(issuer_uri.to_owned())?,
+            ClientId::new(client_id.to_owned()),
+            scopes
+                .iter()
+                .map(|scope| Scope::new((*scope).to_owned()))
                 .collect(),
-            http_client: Self::http_client()?,
+            RedirectUrl::from_url(redirect_url),
+            callback_addr,
+            http_client.clone(),
+        );
+
+        Ok(Self {
+            issuer_uri,
+            client_id,
+            scopes,
+            http_client,
+            authorizer,
         })
+    }
+
+    pub(crate) fn scope_provider(&self) -> &impl SupportedScopesProvider {
+        &self.authorizer
     }
 
     pub(crate) fn token_provider(&self) -> anyhow::Result<IdentityTokenProvider> {
         Ok(StoredTokenProvider::new(
             self.storage()?,
-            self.authorizer()?,
+            self.authorizer.clone(),
         ))
     }
 
@@ -56,23 +80,6 @@ impl IdentityApp {
             "razornd-identity-cli",
             keyring_account,
         ))
-    }
-
-    fn authorizer(&self) -> anyhow::Result<LazyOidcClient> {
-        let redirect_url = self.redirect_uri.parse::<Url>()?;
-        let callback_addr = redirect_url.authority().parse()?;
-        let authorizer = LazyOidcClient::new(
-            IssuerUrl::new(self.issuer_uri.to_owned())?,
-            ClientId::new(self.client_id.to_owned()),
-            self.scopes
-                .iter()
-                .map(|scope| Scope::new(scope.to_string()))
-                .collect(),
-            RedirectUrl::from_url(redirect_url),
-            callback_addr,
-            self.http_client.clone(),
-        );
-        Ok(authorizer)
     }
 
     fn http_client() -> Result<reqwest::Client, reqwest::Error> {

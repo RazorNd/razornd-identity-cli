@@ -21,6 +21,9 @@ use std::error::Error;
 use thiserror::Error as ThisError;
 use url::Url;
 
+mod clients;
+pub use clients::*;
+
 /// Administrative account representation returned by razornd-identity.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct Account {
@@ -81,9 +84,13 @@ where
     UnexpectedStatus { status: StatusCode, body: String },
     #[error("An account with this username already exists")]
     AccountAlreadyExists,
+    #[error("The service could not allocate a unique OAuth2 client ID")]
+    ClientAlreadyExists,
+    #[error("Invalid OAuth2 client ID")]
+    InvalidClientId,
 }
 
-/// Client for razornd-identity's administrative account API.
+/// Client for razornd-identity's administrative API.
 pub struct RazorIdentityClient<P> {
     base_url: Url,
     token_provider: P,
@@ -220,7 +227,7 @@ mod tests {
         matchers::{bearer_token, body_json, method, path},
     };
 
-    struct TestTokenProvider;
+    pub(super) struct TestTokenProvider;
 
     #[async_trait]
     impl TokenProvider for TestTokenProvider {
@@ -231,7 +238,7 @@ mod tests {
         }
     }
 
-    fn client(server: &MockServer) -> RazorIdentityClient<TestTokenProvider> {
+    pub(super) fn client(server: &MockServer) -> RazorIdentityClient<TestTokenProvider> {
         RazorIdentityClient::new(
             Url::parse(&server.uri()).unwrap(),
             TestTokenProvider,

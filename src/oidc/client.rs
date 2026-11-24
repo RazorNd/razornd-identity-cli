@@ -1,7 +1,7 @@
 use crate::oidc::{
     AccessToken, Authorization, AuthorizationProvider, Browser, CallbackListenError,
     CallbackListener, CallbackReceiveError, CallbackServer, LocalCallbackServer, RefreshToken,
-    SystemBrowser,
+    SupportedScopesProvider, SystemBrowser,
 };
 use async_trait::async_trait;
 use openidconnect::{
@@ -19,6 +19,7 @@ use openidconnect::{
 };
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::convert::Infallible;
 use std::io;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -75,7 +76,7 @@ impl OAuth2TokenResponse for OwnedCoreTokenResponse {
         self.refresh_token.as_ref()
     }
 
-    fn scopes(&self) -> Option<&Vec<openidconnect::Scope>> {
+    fn scopes(&self) -> Option<&Vec<Scope>> {
         None
     }
 }
@@ -102,6 +103,15 @@ type TokenEndpointError = RequestTokenError<
 pub enum OidcClientInitError {
     #[error("OIDC provider discovery failed: {0}")]
     Discovery(String),
+}
+
+pub(super) async fn discover_provider(
+    issuer_url: IssuerUrl,
+    http_client: &reqwest::Client,
+) -> Result<CoreProviderMetadata, OidcClientInitError> {
+    CoreProviderMetadata::discover_async(issuer_url, http_client)
+        .await
+        .map_err(|error| OidcClientInitError::Discovery(error.to_string()))
 }
 
 #[derive(Debug, Error)]
@@ -132,6 +142,7 @@ pub enum OidcClientError {
 pub struct OidcClient<C = LocalCallbackServer, B = SystemBrowser> {
     oidc_client: ConfiguredCoreClient,
     scopes: Vec<Scope>,
+    supported_scopes: Option<Vec<Scope>>,
     http_client: reqwest::Client,
     redirect_url: RedirectUrl,
     callback_server: C,
@@ -219,20 +230,48 @@ where
         callback_server: C,
         browser: B,
     ) -> Result<Self, OidcClientInitError> {
-        let provider = CoreProviderMetadata::discover_async(issuer_url, &http_client)
-            .await
-            .map_err(|error| OidcClientInitError::Discovery(error.to_string()))?;
+        let provider = discover_provider(issuer_url, &http_client).await?;
+        Ok(Self::from_provider_metadata(
+            provider,
+            client_id,
+            scopes,
+            redirect_url,
+            http_client,
+            callback_server,
+            browser,
+        ))
+    }
 
+    pub(super) fn from_provider_metadata(
+        provider: CoreProviderMetadata,
+        client_id: ClientId,
+        scopes: Vec<Scope>,
+        redirect_url: RedirectUrl,
+        http_client: reqwest::Client,
+        callback_server: C,
+        browser: B,
+    ) -> Self {
+        let supported_scopes = provider.scopes_supported().cloned();
         let oidc_client = ConfiguredCoreClient::from_provider_metadata(provider, client_id, None);
 
-        Ok(Self {
+        Self {
             oidc_client,
             scopes,
+            supported_scopes,
             http_client,
             redirect_url,
             callback_server,
             browser,
-        })
+        }
+    }
+}
+
+#[async_trait]
+impl<C: Send + Sync, B: Send + Sync> SupportedScopesProvider for OidcClient<C, B> {
+    type Error = Infallible;
+
+    async fn supported_scopes(&self) -> Result<Option<&[Scope]>, Self::Error> {
+        Ok(self.supported_scopes.as_deref())
     }
 }
 

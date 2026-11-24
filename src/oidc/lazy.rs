@@ -1,12 +1,12 @@
 use super::{
     browser::{Browser, SystemBrowser},
     callback_server::{CallbackServer, LocalCallbackServer},
-    client::OidcClient,
+    client::{OidcClient, discover_provider},
 };
-use crate::oidc::{Authorization, AuthorizationProvider};
+use crate::oidc::{Authorization, AuthorizationProvider, SupportedScopesProvider};
 use async_trait::async_trait;
 use openidconnect::{ClientId, IssuerUrl, RedirectUrl, Scope};
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 use thiserror::Error;
 use tokio::sync::{Mutex, OnceCell};
 
@@ -36,13 +36,24 @@ struct OidcClientConfig<C, B> {
     browser: B,
 }
 
-/// Lazily initializes an [`OidcClient`] on the first token request.
+/// Lazily initializes an [`OidcClient`] on the first discovery or token request.
 ///
-/// Concurrent first requests share the same initialization; if discovery
-/// fails, the initialization error is returned to the caller.
+/// Clones and concurrent first requests share successful initialization.
 pub struct LazyOidcClient<C = LocalCallbackServer, B = SystemBrowser> {
+    state: Arc<LazyOidcClientState<C, B>>,
+}
+
+struct LazyOidcClientState<C, B> {
     config: Mutex<Option<OidcClientConfig<C, B>>>,
     client: OnceCell<OidcClient<C, B>>,
+}
+
+impl<C, B> Clone for LazyOidcClient<C, B> {
+    fn clone(&self) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+        }
+    }
 }
 
 impl LazyOidcClient<LocalCallbackServer, SystemBrowser> {
@@ -79,17 +90,60 @@ impl<C: CallbackServer, B: Browser> LazyOidcClient<C, B> {
         browser: B,
     ) -> Self {
         Self {
-            config: Mutex::new(Some(OidcClientConfig {
-                issuer_url,
-                client_id,
-                scopes,
-                redirect_url,
-                http_client,
-                callback_server,
-                browser,
-            })),
-            client: OnceCell::new(),
+            state: Arc::new(LazyOidcClientState {
+                config: Mutex::new(Some(OidcClientConfig {
+                    issuer_url,
+                    client_id,
+                    scopes,
+                    redirect_url,
+                    http_client,
+                    callback_server,
+                    browser,
+                })),
+                client: OnceCell::new(),
+            }),
         }
+    }
+
+    async fn initialized(&self) -> Result<&OidcClient<C, B>, LazyOidcClientInitError> {
+        self.state
+            .client
+            .get_or_try_init(|| async {
+                let mut pending = self.state.config.lock().await;
+                let config = pending
+                    .as_ref()
+                    .ok_or(LazyOidcClientInitError::ConfigurationUnavailable)?;
+                let provider =
+                    discover_provider(config.issuer_url.clone(), &config.http_client).await?;
+
+                // Retain configuration on failure or cancellation so authorization can retry.
+                let config = pending
+                    .take()
+                    .ok_or(LazyOidcClientInitError::ConfigurationUnavailable)?;
+                Ok(OidcClient::from_provider_metadata(
+                    provider,
+                    config.client_id,
+                    config.scopes,
+                    config.redirect_url,
+                    config.http_client,
+                    config.callback_server,
+                    config.browser,
+                ))
+            })
+            .await
+    }
+}
+
+#[async_trait]
+impl<C: CallbackServer, B: Browser> SupportedScopesProvider for LazyOidcClient<C, B> {
+    type Error = LazyOidcClientInitError;
+
+    async fn supported_scopes(&self) -> Result<Option<&[Scope]>, Self::Error> {
+        self.initialized()
+            .await?
+            .supported_scopes()
+            .await
+            .map_err(|never| match never {})
     }
 }
 
@@ -103,28 +157,9 @@ where
 
     async fn authorize(&self) -> Result<Authorization, Self::Error> {
         let client = self
-            .client
-            .get_or_try_init(|| async {
-                let config = self.config.lock().await.take().ok_or_else(|| {
-                    LazyOidcClientError::Initialization(
-                        LazyOidcClientInitError::ConfigurationUnavailable,
-                    )
-                })?;
-                OidcClient::with_components(
-                    config.issuer_url,
-                    config.client_id,
-                    config.scopes,
-                    config.redirect_url,
-                    config.http_client,
-                    config.callback_server,
-                    config.browser,
-                )
-                .await
-                .map_err(|error| {
-                    LazyOidcClientError::Initialization(LazyOidcClientInitError::from(error))
-                })
-            })
-            .await?;
+            .initialized()
+            .await
+            .map_err(LazyOidcClientError::Initialization)?;
 
         client
             .authorize()
@@ -138,7 +173,9 @@ mod tests {
     use super::*;
     use crate::oidc::{
         OidcClientError, OidcClientInitError, TokenProvider,
-        tests::support::{mount_oidc_provider, successful_callback_components},
+        tests::support::{
+            mount_oidc_provider, mount_oidc_provider_with_scopes, successful_callback_components,
+        },
     };
     use std::net::TcpListener;
     use wiremock::MockServer;
@@ -161,10 +198,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn multiple_token_requests_discover_issuer_only_once() -> anyhow::Result<()> {
+    async fn supported_scopes_and_token_requests_share_discovery() -> anyhow::Result<()> {
         let server = MockServer::start().await;
         let issuer = server.uri();
-        mount_oidc_provider(&server, 1, 2).await;
+        mount_oidc_provider_with_scopes(&server, 1, 2, Some(&["openid", "email"])).await;
 
         let redirect_url = RedirectUrl::new("http://127.0.0.1:54321/callback".to_owned())?;
         let (callback_server, browser) = successful_callback_components(&redirect_url, "openid");
@@ -178,6 +215,24 @@ mod tests {
                 .build()?,
             callback_server,
             browser,
+        );
+
+        assert_eq!(
+            client.clone().supported_scopes().await?,
+            Some(
+                &[
+                    Scope::new("openid".to_owned()),
+                    Scope::new("email".to_owned())
+                ][..]
+            )
+        );
+        assert!(
+            server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|request| { request.url.path() != "/token" }),
         );
 
         let authorization = client.authorize().await?;
@@ -199,6 +254,31 @@ mod tests {
         let access_token = client.access_token().await?;
         assert_eq!(access_token.expose_secret(), "test-access-token");
 
+        server.verify().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn missing_scopes_are_optional_and_failed_discovery_can_be_retried() -> anyhow::Result<()>
+    {
+        let server = MockServer::start().await;
+        let client = LazyOidcClient::new(
+            IssuerUrl::new(server.uri())?,
+            ClientId::new("test-client".to_owned()),
+            vec![Scope::new("openid".to_owned())],
+            RedirectUrl::new("http://127.0.0.1:54321/callback".to_owned())?,
+            "127.0.0.1:54321".parse()?,
+            reqwest::Client::new(),
+        );
+        assert!(matches!(
+            client.supported_scopes().await,
+            Err(LazyOidcClientInitError::OidcClient(
+                OidcClientInitError::Discovery(_)
+            ))
+        ));
+
+        mount_oidc_provider(&server, 1, 0).await;
+        assert_eq!(client.supported_scopes().await?, None);
         server.verify().await;
         Ok(())
     }
