@@ -2,6 +2,31 @@
 
 `razornd-identity-cli` is a command-line client for [razornd-identity](https://github.com/RazorNd/razornd-identity), RazorNd's identity and access management service. It manages user accounts and OAuth2 clients through the administrative API.
 
+## Installation
+
+1. Install a current stable Rust toolchain and Cargo using [rustup](https://rustup.rs/).
+   The project uses Rust edition 2024, which requires Rust 1.85 or newer.
+   Git and a working native build toolchain are also required.
+2. Install the CLI directly from GitHub:
+
+   ```bash
+   cargo install --git https://github.com/RazorNd/razornd-identity-cli.git --locked
+   ```
+
+   Cargo downloads the repository, builds the CLI in release mode, and installs
+   `razornd-identity-cli` into `$HOME/.cargo/bin` by default.
+3. Ensure that Cargo's binary directory is in your `PATH`, then verify the installation:
+
+   ```bash
+   razornd-identity-cli --help
+   ```
+
+To update, run the installation command again. To remove the CLI, run
+`cargo uninstall razornd-identity-cli`. For a specific branch, tag, or commit,
+add Cargo's `--branch`, `--tag`, or `--rev` option to the installation command.
+The compile-time configuration variables described below can also be set before
+`cargo install`; changing them requires reinstalling the CLI (use `--force`).
+
 ## Status
 
 The service currently exposes administrative account endpoints under `/api/admin/accounts`:
