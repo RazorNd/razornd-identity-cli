@@ -27,54 +27,51 @@ add Cargo's `--branch`, `--tag`, or `--rev` option to the installation command.
 The compile-time configuration variables described below can also be set before
 `cargo install`; changing them requires reinstalling the CLI (use `--force`).
 
-## Status
+## Authentication and configuration
 
-The service currently exposes administrative account endpoints under `/api/admin/accounts`:
+The administrative API requires appropriate authorization. By default, the CLI uses the public OAuth client `razornd-identity-cli` with Authorization Code and PKCE (S256), without a client secret. It requests `openid profile accounts:admin clients:admin`. The registered callback is `http://127.0.0.1:0/oauth2/callback`; the CLI binds a free loopback port and sends the actual callback URI to the server. The server controls consent and the access token lifetime (six hours in the default server registration).
 
-- `POST /api/admin/accounts` — create an account. If `password` is omitted, the service generates one and returns it once.
-- `GET /api/admin/accounts/{username}` — retrieve account details.
-- `PATCH /api/admin/accounts/{username}` — update the password and/or enabled status.
-- `DELETE /api/admin/accounts/{username}` — disable an account.
+Override the following settings at compile time:
 
-The API is protected by the identity service's administrative authorization, so clients must be configured with appropriate access.
+| Variable | Setting |
+| --- | --- |
+| `RAZORND_IDENTITY_ISSUER_URI` | Issuer URI |
+| `RAZORND_IDENTITY_CLIENT_ID` | OAuth client ID |
+| `RAZORND_IDENTITY_REDIRECT_URI` | Callback URI |
+| `RAZORND_IDENTITY_SCOPES` | Whitespace-separated scopes; `openid` is always included |
 
-By default, the CLI uses the public OAuth client `razornd-identity-cli` with Authorization Code and PKCE (S256), without a client secret. It requests `openid profile accounts:admin clients:admin`. The registered callback is `http://127.0.0.1:0/oauth2/callback`; the CLI binds a free loopback port and sends the actual callback URI to the server. The server controls consent and the access token lifetime (six hours in the default server registration).
+For example, set `RAZORND_IDENTITY_SCOPES="openid profile accounts:admin"` when installing or building the CLI.
 
-Override the issuer, client ID, callback URI, or whitespace-separated scopes at compile time with `RAZORND_IDENTITY_ISSUER_URI`, `RAZORND_IDENTITY_CLIENT_ID`, `RAZORND_IDENTITY_REDIRECT_URI`, or `RAZORND_IDENTITY_SCOPES`. The `openid` scope is always included.
-
-```bash
-RAZORND_IDENTITY_SCOPES="openid profile accounts:admin" \
-cargo run -- user get some-user
-```
-
-To sign in explicitly, run `razornd-identity-cli auth login` (or `cargo run -- auth login`).
+To sign in explicitly, run `razornd-identity-cli auth login`.
 This starts browser authorization even if a token is already saved, and replaces the local
 session only after a new token is saved. You can also skip this step:
 `user` and `client` commands start authorization automatically when making a request without a usable cached token.
 
-To sign out of the CLI, run `razornd-identity-cli auth logout` (or `cargo run -- auth logout`).
+To sign out of the CLI, run `razornd-identity-cli auth logout`.
 This removes the local token for the current issuer, client ID, and scope configuration.
 It works offline and succeeds even if no token is stored. It does not revoke the token
 on the server or sign out of the browser. The next API request starts authorization again.
 
-Create an account interactively, or provide the positional username. When prompted, an empty password asks the service to generate one:
+## User accounts
+
+The `user` commands use the administrative account endpoints under `/api/admin/accounts`. Create an account interactively, or provide the positional username. When prompted, an empty password asks the service to generate one and return it once:
 
 ```bash
-cargo run -- user create
-cargo run -- user create new-user
-cargo run -- user create new-user --disabled
-printf '%s' "$USER_PASSWORD" | cargo run -- user create new-user --password-stdin
+razornd-identity-cli user create
+razornd-identity-cli user create new-user
+razornd-identity-cli user create new-user --disabled
+printf '%s' "$USER_PASSWORD" | razornd-identity-cli user create new-user --password-stdin
 ```
 
 Get, update, and disable accounts:
 
 ```bash
-cargo run -- user get new-user
-cargo run -- user update new-user --password --enabled
-cargo run -- user update new-user --password
-printf '%s' "$USER_PASSWORD" | cargo run -- user update new-user --password-stdin
-cargo run -- user update new-user --disabled
-cargo run -- user disable new-user
+razornd-identity-cli user get new-user
+razornd-identity-cli user update new-user --password --enabled
+razornd-identity-cli user update new-user --password
+printf '%s' "$USER_PASSWORD" | razornd-identity-cli user update new-user --password-stdin
+razornd-identity-cli user update new-user --disabled
+razornd-identity-cli user disable new-user
 ```
 
 `user update` changes only the fields selected by its options. `--password` prompts for a new password; alternatively, `--password-stdin` reads it from stdin. These options conflict. Set account status explicitly with `--enabled` or `--disabled` (also available as `--enable` or `--disable`). At least one password or status option is required.
@@ -90,26 +87,31 @@ The wizard offers scopes advertised in the issuer's OIDC `scopes_supported` meta
 Use flags to run without prompts. The CLI never switches to the wizard when a configuration flag is supplied:
 
 ```bash
-cargo run -- client create --name "My service" \
+razornd-identity-cli client create --name "My service" \
   --auth-method client_secret_basic --grant-type client_credentials --scope profile
-cargo run -- client get <client-id>
-cargo run -- client update <client-id> --add-scope email --remove-scope profile \
+razornd-identity-cli client get "$CLIENT_ID"
+razornd-identity-cli client update "$CLIENT_ID" --add-scope email --remove-scope profile \
   --access-token-ttl PT15M --reuse-refresh-tokens false
-cargo run -- client delete <client-id> --yes
+razornd-identity-cli client delete "$CLIENT_ID" --yes
 ```
 
 Non-interactive creation requires `--name`, `--auth-method`, and `--grant-type`. Repeat flags to supply multiple methods, grants, redirect URIs, or scopes. Use `--auth-method none` on its own for a public client, and supply at least one `--redirect-uri` with `authorization_code`. Token lifetimes use ISO 8601 duration strings (for example, `PT15M`), and unspecified token settings use the server defaults.
 
 Updates change only the supplied fields. Use matching `--add-*` and `--remove-*` flags to edit sets rather than replace them. `--reuse-refresh-tokens false` explicitly disables reuse; omitting the flag leaves it unchanged. See `client create --help` and `client update --help` for all options.
 
-The server assigns the client ID. If it generates a client secret, the CLI prints it to stdout only at creation. Save it securely and avoid sending stdout to a shared log. Neither reading nor updating a client reveals or rotates its secret. Deletion permanently removes the registration and needs confirmation in a terminal or `--yes` in a script.
+The server assigns the client ID; set `CLIENT_ID` to that value for the examples above. If it generates a client secret, the CLI prints it to stdout only at creation. Save it securely and avoid sending stdout to a shared log. Neither reading nor updating a client reveals or rotates its secret. Deletion permanently removes the registration and needs confirmation in a terminal or `--yes` in a script.
 
 ## Development
 
-Requires the Rust toolchain with Cargo. From the repository root:
+From the repository root, use `cargo run --` in place of `razornd-identity-cli` to run a command from source. For example:
 
 ```bash
-cargo run
+cargo run -- user get new-user
+```
+
+Run the development checks with:
+
+```bash
 cargo fmt -- --check
 cargo check
 cargo test
